@@ -1,24 +1,18 @@
----
-type: Reference
-title: motion_planner
-description: Package README for the planning-algorithms-only package -- CartesianPlanner, OmplPlanner, and the world-geometry loader utility.
-tags: [motion-planning, package-readme]
-generated: { by: human:Lakshya-04, at: 2026-07-21T13:15:52Z }
-status: stable
----
+# motion_planner (core)
 
-# motion_planner
+ROS-free motion planning core. No rclcpp, MoveIt, tf2 or message headers.
 
-Planning algorithms for the manipulation stack.
+- **Ports:** `Planner` (plan + ik + collision), `IkPort`, `CollisionPort`, `ScenePort`
+  (world geometry: points, named boxes) in `include/motion_planner/core/`.
+- **Types:** `PlanningRequest/Result`, `IkRequest/Result`, `CollisionRequest/Result`
+  (`planning_types.hpp`), built on `core_types::Pose` / `Trajectory`.
+- **`MotionPlanner`:** segment planning with Cartesian-first routing, free-space fallback and
+  bridge-resume after a partial failure, over any `Planner`.
+- **Geometry helpers:** wall penetration check, reachability tilt.
+- **`motion_planner_pcd`** (optional, needs PCL): `.pcd` / `.ply` loading into a `ScenePort` update.
 
-## Package scope
+Backends implement the ports in their own adapter packages. Today that is
+[`motion_planner_moveit`](../motion_planner_moveit); cuRobo v2 and VAMP adapters are planned
+(see `docs/architecture.md`).
 
-This package holds the planning **algorithms** only -- `CartesianPlanner`, `OmplPlanner`, the
-`Planner` interface + POD types, and `world_model_loader_node` (injects a `.pcd`/`.ply` point cloud
-into the planning scene as an octomap, for obstacle testing). The orchestration layer built on top
-of these planners (`ManipulationManager`, the `ExecuteMotionSegments` action server,
-`CoverageSource`/`CoverageFeasibilityAnalyzer`, `MotionValidator`, `execution_tracker_node`, and the
-FSP/Cartesian planner benchmark tool -- `PlannerBenchmark`) lives in the separate
-`manipulation_manager` package, which depends on this one (never the other way around) -- see
-that package's own README for `motion_planner_test.launch.py` (the benchmark tool) and
-`cartesian_test.launch.py` (the mission-level validator).
+Layout and rules: `docs/package_layout.md`.

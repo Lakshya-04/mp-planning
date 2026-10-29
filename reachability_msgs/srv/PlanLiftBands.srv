@@ -1,0 +1,15 @@
+# Fewest lift heights that together reach all targets from a base station.
+geometry_msgs/Pose[] targets_world
+float64 base_x
+float64 base_y
+# Candidate lift heights lo..hi in steps of `step` (step must be > 0).
+float64 lift_min
+float64 lift_max
+float64 step
+# Arm base height above the lift's zero position.
+float64 arm_mount_offset_z
+---
+bool success
+reachability_msgs/LiftBand[] bands
+uint32[] unreachable
+string message

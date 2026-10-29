@@ -100,7 +100,7 @@ struct CoverageWaypoint
 // the strip column nearest target_x, and returns its real endpoint waypoints (same x/y/
 // orientation, one flat vertical strip on the wall) sorted by z. z_offset shifts from the JSON's
 // own frame (base_link, matching wall_scene.json's own "frame_id") into whatever frame this
-// node's own targets are expressed in (base_footprint, so +0.31m -- see this file's own frame_id
+// node's own targets are expressed in (base_footprint, so the base-to-footprint offset -- see this file's own frame_id
 // comment).
 std::vector<CoverageWaypoint> loadNearestCoverageColumn(
   const std::string & json_path, double target_x, double z_offset)
@@ -199,8 +199,20 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = std::make_shared<rclcpp::Node>("coverage_pass_demo");
 
-  const std::string planning_group = "arm_7dof";
-  const std::string frame_id = "base_footprint";  // MoveGroupInterface's planning frame for ranger_mini (base_link and base_footprint are two disconnected tf trees here -- see this run's own resolvePoseToPlanningFrame() error)
+  // Robot-specific names are parameters; the defaults match mobile_manipulator_description with
+  // mobile_manipulator_moveit_config. The controller must be a JTAC (compliant trajectory
+  // controller) instance under `controller_name`: this demo drives its force topics.
+  node->declare_parameter<std::string>("planning_group", "lift_arm");
+  node->declare_parameter<std::string>("planning_frame", "base_footprint");
+  node->declare_parameter<std::string>("controller_name", "lift_arm_controller");
+  // Height of base_link above planning_frame: coverage_output.json is in base_link (see
+  // wall_scene.json's frame_id) while this node's targets are expressed in planning_frame.
+  node->declare_parameter<double>("base_link_offset_z", 0.2);
+  const std::string planning_group = node->get_parameter("planning_group").as_string();
+  const std::string frame_id = node->get_parameter("planning_frame").as_string();
+  const std::string controller_name = node->get_parameter("controller_name").as_string();
+  const std::string controller_ns = "/" + controller_name;
+  const double base_link_offset_z = node->get_parameter("base_link_offset_z").as_double();
 
   auto backend = std::make_shared<motion_planner::MoveItPlanningBackend>();
   auto cartesian = std::make_unique<motion_planner::CartesianPlanner>(backend);
@@ -209,7 +221,7 @@ int main(int argc, char ** argv)
   motion_planner.resetContinuity();
 
   auto jtac_client = rclcpp_action::create_client<FollowJointTrajectory>(
-    node, "/combined_arm_lift_controller/follow_joint_trajectory");
+    node, controller_ns + "/follow_joint_trajectory");
   RCLCPP_INFO(node->get_logger(), "Waiting for JTAC action server...");
   if (!jtac_client->wait_for_action_server(std::chrono::seconds(15))) {
     RCLCPP_ERROR(node->get_logger(), "JTAC action server unavailable");
@@ -217,11 +229,11 @@ int main(int argc, char ** argv)
   }
 
   auto force_pub = node->create_publisher<std_msgs::msg::Float64>(
-    "/combined_arm_lift_controller/target_force_n", 10);
+    controller_ns + "/target_force_n", 10);
   auto param_client = std::make_shared<rclcpp::AsyncParametersClient>(
-    node, "/combined_arm_lift_controller");
+    node, controller_ns);
   if (!param_client->wait_for_service(std::chrono::seconds(10))) {
-    RCLCPP_ERROR(node->get_logger(), "combined_arm_lift_controller param service unavailable");
+    RCLCPP_ERROR(node->get_logger(), "%s param service unavailable", controller_name.c_str());
     return 1;
   }
 
@@ -249,10 +261,10 @@ int main(int argc, char ** argv)
   // actually reachable -- everything else about wall_x/wall_y below comes straight from the
   // planner's own output, not a guess.
   const std::string coverage_output_path = "/tmp/wall_export/coverage_output.json";
-  // +0.31m: coverage_output.json is in base_link (see wall_scene.json's own frame_id); this
-  // node's own frame_id is base_footprint (base_footprint -> base_link is a fixed +0.31m, see
+  // the base-to-footprint offset: coverage_output.json is in base_link (see wall_scene.json's own frame_id); this
+  // node's own frame_id is base_footprint (base_footprint -> base_link is a fixed the base-to-footprint offset, see
   // this file's own frame_id comment, above).
-  const auto coverage_column = loadNearestCoverageColumn(coverage_output_path, 0.06, 0.31);
+  const auto coverage_column = loadNearestCoverageColumn(coverage_output_path, 0.06, base_link_offset_z);
   if (coverage_column.size() < 2) {
     RCLCPP_ERROR(
       node->get_logger(), "loadNearestCoverageColumn: expected >=2 waypoints, got %zu",
@@ -324,7 +336,7 @@ int main(int argc, char ** argv)
     force_pub->publish(msg);
   }
   auto max_offset_pub = node->create_publisher<std_msgs::msg::Float64>(
-    "/combined_arm_lift_controller/max_offset_m", 10);
+    controller_ns + "/max_offset_m", 10);
   {
     // Default is 0.1m -- observed live, the offset-diverged safety clamp (kRunawayMultiplier=5x
     // this) was tripping constantly at ~0.5m = exactly 5 * 0.1, resetting the compliance
@@ -389,7 +401,7 @@ int main(int argc, char ** argv)
   // transient spike) is visible in this node's own output.
   RCLCPP_INFO(node->get_logger(), "Holding at the wall, watching contact force settle...");
   auto wrench_sub = node->create_subscription<geometry_msgs::msg::WrenchStamped>(
-    "/combined_arm_lift_controller/measured_wrench", 10,
+    controller_ns + "/measured_wrench", 10,
     [node](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
       RCLCPP_INFO(
         node->get_logger(), "  measured force: x=%.3f y=%.3f z=%.3f N", msg->wrench.force.x,

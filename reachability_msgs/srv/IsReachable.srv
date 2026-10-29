@@ -1,0 +1,7 @@
+# Forward query: can the arm reach this tool pose? Pose is in the arm base frame
+# (tool z axis = approach axis).
+geometry_msgs/Pose tool_in_arm_base
+---
+bool reachable
+uint8 count
+string message

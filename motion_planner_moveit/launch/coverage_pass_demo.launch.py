@@ -1,51 +1,44 @@
-"""Launches coverage_pass_demo_node with the same MoveIt config params move_group.launch.py
-supplies -- MoveItPlanningBackend constructs its own internal MoveGroupInterface node
-("motion_planner_backend") at runtime, and MoveGroupInterface's constructor reads
-robot_description/robot_description_semantic/kinematics off its own node's parameters, not
-move_group's -- so this node needs the same params handed to it directly, same as move_group
-itself gets them (see moveit_config/launch/move_group.launch.py's own header).
+"""Launches coverage_pass_demo_node with this robot's MoveIt parameters.
 
-    ros2 launch motion_planner_moveit coverage_pass_demo.launch.py
+MoveItPlanningBackend constructs its own MoveGroupInterface node ("motion_planner_backend") at
+runtime, and MoveGroupInterface's constructor reads robot_description, the semantic description
+and kinematics off its own node's parameters rather than move_group's, so this node needs the
+same parameters handed to it directly, exactly as move_group itself gets them. They come from
+mobile_manipulator_moveit_config's shared builder.
+
+The demo drives a JTAC (compliant trajectory controller) instance: start the robot with a
+controller of that type under `controller_name` (default lift_arm_controller) first, then
+
+    ros2 launch motion_planner_moveit coverage_pass_demo.launch.py arm:=ur10e
 """
-
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from moveit_configs_utils import MoveItConfigsBuilder
+from mobile_manipulator_moveit_config import build_moveit_config
+
+
+def _node(context):
+    arm = LaunchConfiguration('arm').perform(context)
+    moveit_config = build_moveit_config(arm, hardware='mock')
+    return [Node(
+        package='motion_planner_moveit',
+        executable='coverage_pass_demo_node',
+        output='screen',
+        parameters=[
+            moveit_config.to_dict(),
+            {'use_sim_time': False},
+            {'planning_pipelines.pipeline_names': ['ompl']},
+            {'planning_group': LaunchConfiguration('planning_group').perform(context)},
+            {'controller_name': LaunchConfiguration('controller_name').perform(context)},
+        ],
+    )]
 
 
 def generate_launch_description():
-    description_share = get_package_share_directory("description")
-    urdf_xacro_path = os.path.join(description_share, "urdf", "robot.urdf.xacro")
-
-    moveit_config = (
-        MoveItConfigsBuilder("robot", package_name="moveit_config")
-        .robot_description(
-            file_path=urdf_xacro_path,
-            # Must match what's actually running in Gazebo this session (ranger_mini) -- serum
-            # and ranger_mini mount the lift+arm at completely different heights (0 vs +0.3965m,
-            # see robot.urdf.xacro's own lift_origin_xyz per base_type), so planning against the
-            # wrong one collision-checks a robot shaped nothing like the real one.
-            mappings={"base_type": "ranger_mini", "manipulation": "true"},
-        )
-        .robot_description_semantic(file_path="srdf/robot.srdf.xacro")
-        .robot_description_kinematics(file_path="config/kinematics.yaml")
-        .joint_limits(file_path="config/joint_limits.yaml")
-        .planning_pipelines(pipelines=["ompl"])
-        .to_moveit_configs()
-    )
-
-    coverage_pass_demo_node = Node(
-        package="motion_planner_moveit",
-        executable="coverage_pass_demo_node",
-        output="screen",
-        parameters=[
-            moveit_config.to_dict(),
-            {"use_sim_time": True},
-            {"planning_pipelines.pipeline_names": ["ompl"]},
-        ],
-    )
-
-    return LaunchDescription([coverage_pass_demo_node])
+    return LaunchDescription([
+        DeclareLaunchArgument('arm', default_value='ur10e'),
+        DeclareLaunchArgument('planning_group', default_value='lift_arm'),
+        DeclareLaunchArgument('controller_name', default_value='lift_arm_controller'),
+        OpaqueFunction(function=_node),
+    ])

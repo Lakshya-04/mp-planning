@@ -1,0 +1,10 @@
+# Inverse query: where can the base stand to reach a tool pose given in the world frame?
+geometry_msgs/Pose tool_in_world
+# Height of the arm base above the world plane (lift height + mount offset).
+float64 arm_base_z
+# Samples per radius when the approach axis is vertical (0 = default).
+uint32 ring_samples
+---
+bool success
+reachability_msgs/BaseCandidate[] candidates
+string message

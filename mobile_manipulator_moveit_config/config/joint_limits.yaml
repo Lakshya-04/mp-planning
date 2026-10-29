@@ -1,0 +1,27 @@
+# MoveIt limits layered on the URDF's position limits. Scaling is explicit on purpose: the
+# MoveGroup default is 0.1, which silently runs every plan at 10% speed.
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+joint_limits:
+  # The lift is the slow axis; 0.2 m/s matches the starter profile. Set it to your real lift.
+  lift_joint:
+    has_velocity_limits: true
+    max_velocity: 0.2
+    has_acceleration_limits: true
+    max_acceleration: 0.5
+    has_jerk_limits: false
+  # UR-family joint names
+  arm_shoulder_pan_joint: &fast {has_velocity_limits: true, max_velocity: 2.094, has_acceleration_limits: true, max_acceleration: 3.0}
+  arm_shoulder_lift_joint: *fast
+  arm_elbow_joint: *fast
+  arm_wrist_1_joint: &wrist {has_velocity_limits: true, max_velocity: 3.14, has_acceleration_limits: true, max_acceleration: 5.0}
+  arm_wrist_2_joint: *wrist
+  arm_wrist_3_joint: *wrist
+  # Generic reference arm
+  arm_joint1: *fast
+  arm_joint2: *fast
+  arm_joint3: *fast
+  arm_joint4: *wrist
+  arm_joint5: *wrist
+  arm_joint6: *wrist

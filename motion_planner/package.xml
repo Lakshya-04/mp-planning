@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>motion_planner</name>
+  <version>0.1.0</version>
+  <description>
+    Planning algorithms (CartesianPlanner, OmplPlanner) for the
+    manipulation stack. The orchestration layer built on top of these
+    planners (ManipulationManager, the ExecuteMotionSegments action server,
+    CoverageSource/CoverageFeasibilityAnalyzer, MotionValidator) lives in the
+    separate manipulation_manager package.
+  </description>
+  <maintainer email="100lakshyaagarwal@gmail.com">Lakshya Agarwal</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_msgs</depend>
+  <depend>core_types</depend>
+  <depend>ros_adapters</depend>
+  <depend>octomap</depend>
+  <depend>octomap_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>rclcpp_action</depend>
+  <depend>control_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>nlohmann_json</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

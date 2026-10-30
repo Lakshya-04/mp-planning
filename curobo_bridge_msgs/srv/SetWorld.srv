@@ -1,0 +1,9 @@
+# Replaces the planner's world. An empty request clears it. Points are voxelized into cubes of
+# `point_voxel` (0 = 0.05 m) in whatever room the boxes leave in the obstacle cache.
+curobo_bridge_msgs/Box[] boxes
+sensor_msgs/PointCloud2 points
+float64 point_voxel
+---
+bool success
+uint32 box_count
+string message

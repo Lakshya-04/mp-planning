@@ -37,7 +37,16 @@ def build_moveit_config(arm='ur10e', hardware='mock'):
     )
 
 
-def controllers_file(arm):
-    """Path of the ros2_controllers.yaml for `arm`."""
+CONTROLLERS = {'trajectory': 'ros2_controllers.yaml', 'jtac': 'jtac_controllers.yaml'}
+
+
+def hardware_for(controller):
+    """ros2_control hardware mode a controller needs ('jtac' needs velocity commands + F/T)."""
+    return {'trajectory': 'mock', 'jtac': 'jtac_mock'}[controller]
+
+
+def controllers_file(arm, controller='trajectory'):
+    """Path of the controller parameter file for `arm`: 'trajectory' (joint_trajectory_controller)
+    or 'jtac' (the compliant JtacController)."""
     return os.path.join(get_package_share_directory(PACKAGE), 'config', arm_family(arm),
-                        'ros2_controllers.yaml')
+                        CONTROLLERS[controller])

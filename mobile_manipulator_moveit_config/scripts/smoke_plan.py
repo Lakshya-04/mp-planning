@@ -3,7 +3,10 @@
 
 For the 7-DOF `lift_arm` group and the 6-DOF `arm` group: FK of the current state, IK for a pose
 8 cm away, then a collision-free plan (plan only) to that joint solution through move_group.
-Exits non-zero with a message if any step fails.
+With `--execute` the `lift_arm` plan is also executed through the controller, and the script then
+checks that the joints actually arrived at the solution (works for either controller). The 6-joint
+`arm` group stays plan-only: the single controller takes all seven joints, no partial goals. Exits non-zero
+with a message if any step fails.
 """
 import sys
 
@@ -16,6 +19,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 TIMEOUT = 60.0
+EXECUTE = '--execute' in sys.argv
+ARRIVAL_TOLERANCE = 0.03  # rad / m
 
 
 class Smoke(Node):
@@ -117,7 +122,8 @@ class Smoke(Node):
         goal.request.max_velocity_scaling_factor = 0.5
         goal.request.max_acceleration_scaling_factor = 0.5
         goal.request.goal_constraints = [constraints]
-        goal.planning_options = PlanningOptions(plan_only=True)
+        execute = EXECUTE and group == 'lift_arm'
+        goal.planning_options = PlanningOptions(plan_only=not execute)
         send = self.move.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, send, timeout_sec=TIMEOUT)
         handle = send.result()
@@ -132,9 +138,23 @@ class Smoke(Node):
         if len(points) < 2:
             raise RuntimeError(f'[{group}] empty trajectory')
         duration = points[-1].time_from_start.sec + points[-1].time_from_start.nanosec * 1e-9
+        if execute:
+            self.expect_arrival(group, dict(zip(names, values)), group_joints)
         print(f'[{group}] OK: IK solved (largest joint move {biggest:.2f}), '
               f'{len(points)} waypoints, {duration:.2f} s, '
               f'{len(result.planned_trajectory.joint_trajectory.joint_names)} joints')
+
+    def expect_arrival(self, group, target, group_joints):
+        """After an executed plan: the live joint state must be at the solution."""
+        deadline = self.get_clock().now().nanoseconds + int(10e9)
+        worst = None
+        while self.get_clock().now().nanoseconds < deadline:
+            rclpy.spin_once(self, timeout_sec=0.2)
+            now = dict(zip(self.joint_state.name, self.joint_state.position))
+            worst = max(abs(now[n] - v) for n, v in target.items() if n in group_joints and n in now)
+            if worst < ARRIVAL_TOLERANCE:
+                return
+        raise RuntimeError(f'[{group}] executed, but the joints are still {worst:.3f} from the goal')
 
     @staticmethod
     def group_joints(group):

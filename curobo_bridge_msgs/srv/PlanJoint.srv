@@ -1,0 +1,12 @@
+# Collision-free joint-space move, robot joint order.
+float64[] start
+float64[] goal
+---
+bool success
+# none | invalid_request | no_path | unavailable
+string failure_reason_code
+# none | precheck | planning
+string failure_stage
+string message
+trajectory_msgs/JointTrajectory trajectory
+float64 planning_time_s

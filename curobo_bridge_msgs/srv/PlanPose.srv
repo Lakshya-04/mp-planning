@@ -1,0 +1,10 @@
+# Collision-free move to a tool pose (robot base frame), from a joint state.
+float64[] start
+geometry_msgs/Pose goal
+---
+bool success
+string failure_reason_code
+string failure_stage
+string message
+trajectory_msgs/JointTrajectory trajectory
+float64 planning_time_s

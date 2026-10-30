@@ -1,0 +1,14 @@
+# Validity of joint states: inside joint limits, no self-collision, clear of the world.
+# Each trajectory point is one state. With max_step > 0 and several points, the motion between
+# consecutive points is also sampled (largest joint step max_step rad); a sampled check, so gaps
+# thinner than max_step can be missed.
+trajectory_msgs/JointTrajectory states
+float64 max_step
+---
+# The check ran (false for bad input or an unavailable planner; see message).
+bool success
+# Every given state valid and, when max_step > 0, every sampled state in between.
+bool collision_free
+# One entry per given state.
+bool[] state_valid
+string message

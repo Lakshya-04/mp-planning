@@ -1,0 +1,57 @@
+// The motion_planner Planner port over cuRobo: a client of the curobo_bridge planner node.
+//
+// The node does the GPU work in its own process; this class turns PlanningRequest / world updates
+// into service calls and the answers back into PlanningResult. The node passed in must be spun by
+// someone else (an executor thread) because calls wait on the service future.
+#pragma once
+
+#include <memory>
+#include <string>
+
+#include <rclcpp/rclcpp.hpp>
+
+#include "core_types/logger.hpp"
+#include "motion_planner/core/planners/planner.hpp"
+#include "motion_planner/core/scene_port.hpp"
+
+namespace curobo_planner
+{
+
+struct Options
+{
+  std::string node_name{"/curobo_planner"};  ///< Name of the cuRobo planner node (its services' prefix).
+  double wait_for_service_sec{5.0};
+  double timeout_sec{30.0};                  ///< Per-call deadline; the first plan can be slow.
+};
+
+class CuroboClientPlanner : public motion_planner::Planner
+{
+public:
+  CuroboClientPlanner(
+    rclcpp::Node::SharedPtr node, const Options & options = Options{},
+    std::shared_ptr<core_types::Logger> logger = nullptr);
+  ~CuroboClientPlanner() override;
+
+  std::string name() const override {return "curobo";}
+
+  /// Replaces the planner's world (boxes + points, `points_origin` applied). False on failure.
+  bool setWorld(const motion_planner::WorldGeometryUpdate & world, std::string * message = nullptr);
+  bool clearWorld(std::string * message = nullptr);
+
+  /// Joint-space move start_joint_state -> target_joint_state. With no target joint state and one
+  /// target pose, plans to that pose (position + quaternion, robot base frame).
+  motion_planner::PlanningResult plan(const motion_planner::PlanningRequest & request) override;
+  /// Collision-free IK for `target_pose` (xyz + quaternion x y z w, or xyz + roll pitch yaw), robot
+  /// base frame; `joint_seed` optional. `end_effector_link` / `planning_group` are ignored: cuRobo
+  /// solves for its configured tool frame.
+  motion_planner::IkResult ik(const motion_planner::IkRequest & request) override;
+  /// Validity (joint limits, self-collision, world) of `joint_values` and/or the states and sampled
+  /// motions of `trajectory_joint_values`. Pose-based inputs are not supported.
+  motion_planner::CollisionResult collision(const motion_planner::CollisionRequest & request) override;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace curobo_planner

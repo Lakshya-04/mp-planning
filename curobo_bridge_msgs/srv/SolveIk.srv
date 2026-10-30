@@ -1,0 +1,14 @@
+# Collision-free joint solution for a tool pose (robot base frame). `seed` (optional) biases the
+# solution; empty uses the robot's default state.
+geometry_msgs/Pose pose
+float64[] seed
+---
+bool success
+# none | invalid_request | no_solution | unavailable
+string failure_reason_code
+string failure_stage
+string message
+string[] joint_names
+float64[] joints
+float64 position_error
+float64 rotation_error

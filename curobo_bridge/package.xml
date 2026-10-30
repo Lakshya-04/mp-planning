@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>curobo_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    cuRobo v2 (GPU trajectory optimization) behind a ROS-free Python planner with the same
+    structured results as the motion_planner ports. Upstream cuRobo is consumed unmodified from the
+    gpu image (/opt/venv); a ROS node / C++ client sits on top of this core.
+  </description>
+  <maintainer email="100lakshyaagarwal@gmail.com">Lakshya Agarwal</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>curobo_bridge_msgs</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

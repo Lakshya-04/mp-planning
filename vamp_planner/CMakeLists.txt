@@ -73,6 +73,14 @@ target_include_directories(vamp_planner SYSTEM PRIVATE ${VAMP_ROOT}/include)
 target_include_directories(vamp_planner PRIVATE ${GEN_INC})
 set_target_properties(vamp_planner PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# pluginlib plugins (backend selection, docs/backend_selection.md). They only see the plain header,
+# so they need none of the VAMP SIMD flags.
+find_package(pluginlib REQUIRED)
+add_library(vamp_planner_plugins SHARED src/plugins.cpp)
+target_link_libraries(vamp_planner_plugins PUBLIC vamp_planner pluginlib::pluginlib)
+pluginlib_export_plugin_description_file(motion_planner plugins.xml)
+install(TARGETS vamp_planner_plugins ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+
 install(TARGETS vamp_planner EXPORT export_vamp_planner
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
@@ -81,9 +89,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(vamp_planner_test test/vamp_planner_test.cpp)
   target_link_libraries(vamp_planner_test vamp_planner)
+  ament_add_gtest(vamp_plugins_test test/vamp_plugins_test.cpp)
+  target_link_libraries(vamp_plugins_test motion_planner::motion_planner_ros)
 endif()
 
 ament_export_targets(export_vamp_planner HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(core_types motion_planner)
+ament_export_dependencies(core_types motion_planner pluginlib)
 ament_package()

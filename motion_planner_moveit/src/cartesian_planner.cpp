@@ -566,7 +566,7 @@ PlanningResult CartesianPlanner::plan(const PlanningRequest & request)
 
   // Step 3: scoped ACM entry -- a MoveIt-API workaround so
   // computeCartesianPath() doesn't reject the intended contact outright.
-  // Not the safety boundary; see step 5 and Cartesian_Planner_Architecture.md.
+  // Not the safety boundary; step 5 (the post-hoc wall penetration bound) is.
   AcmRestoreGuard acm_guard;
   acm_guard.planner = this;
   if (request.allow_target_contact && !request.target_collision_object_id.empty()) {

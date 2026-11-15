@@ -79,7 +79,7 @@ struct PlanningRequest
   std::vector<double> start_joint_state;
 
   /// CartesianPlanner-specific planner parameters (ignored by OmplPlanner
-  /// unless noted otherwise). See Cartesian_Planner_Architecture.md Part A.
+  /// unless noted otherwise).
   double eef_step{0.0};            ///< computeCartesianPath step (m); 0 = planner default.
   /// Absolute jump-detection thresholds (0 = use CartesianPlanner's own
   /// default, not "disabled" -- jump detection is always on now; see
@@ -95,7 +95,7 @@ struct PlanningRequest
 
   /// Contact-aware collision handling (CartesianPlanner: ACM workaround +
   /// post-hoc bound; OmplPlanner: max_wall_penetration/wall_reference_pose
-  /// only, no ACM -- see Context/Part B.5 in Cartesian_Planner_Architecture.md).
+  /// only, no ACM: OMPL's search cannot route around a mid-plan wall bound).
   bool allow_target_contact{false};             ///< Final waypoint's target surface is intentional contact.
   std::string target_collision_object_id;       ///< Named object the ACM exclusion applies to (never wall/tool-wide).
   core_types::Pose wall_reference_pose;     ///< Point on wall plane (position) + wall normal (local +Z).

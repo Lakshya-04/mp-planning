@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -95,6 +96,12 @@ public:
   /// else warns and uses the fallback planner name instead.
   void setPlannerName(const std::string & planner_name);
   void setPlannerFallback(const std::string & fallback_name);
+
+  /// Per-segment override of the routed mode: segment kind ("contact" when the request has
+  /// allow_target_contact, "transition" otherwise) -> "cartesian" | "free_space" (or "fsp").
+  /// An override beats mode_hint and label routing. Unknown kinds or values warn and are ignored.
+  /// Empty (the default) leaves routing exactly as it was.
+  void setSegmentKindModes(const std::map<std::string, std::string> & kind_to_mode);
 
   std::string selectedMode() const;
   std::string selectedPlanner() const;
@@ -235,6 +242,7 @@ private:
   std::shared_ptr<core_types::Logger> logger_{std::make_shared<core_types::NullLogger>()};
 
   std::string motion_mode_policy_{"cartesian"};
+  std::map<std::string, std::string> segment_kind_modes_;  // kind -> "cartesian" | "fsp"
   std::string requested_planner_{"ompl"};
   std::string fallback_planner_{"ompl"};
   std::string effective_planner_{"ompl"};

@@ -1,0 +1,14 @@
+<library path="vamp_planner_plugins">
+  <class name="vamp" type="vamp_planner::VampPlannerPlugin"
+         base_class_type="motion_planner::PlannerPlugin">
+    <description>VAMP free-space planner (joint-space goals only) over one compiled-in robot.</description>
+  </class>
+  <class name="vamp_collision" type="vamp_planner::VampCollisionPlugin"
+         base_class_type="motion_planner::CollisionPlugin">
+    <description>VAMP state and motion validity checks (joint-space inputs only).</description>
+  </class>
+  <class name="vamp_scene" type="vamp_planner::VampScenePlugin"
+         base_class_type="motion_planner::ScenePlugin">
+    <description>Feeds world geometry (points, boxes) to VAMP.</description>
+  </class>
+</library>

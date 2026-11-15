@@ -16,6 +16,8 @@
 
   <depend>core_types</depend>
   <depend>eigen</depend>
+  <depend>pluginlib</depend>
+  <depend>yaml-cpp</depend>
   <depend>libpcl-all-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>

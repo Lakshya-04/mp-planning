@@ -14,6 +14,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>motion_planner</depend>
+  <depend>pluginlib</depend>
   <depend>core_types</depend>
   <depend>ros_adapters</depend>
   <depend>rclcpp</depend>

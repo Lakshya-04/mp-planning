@@ -8,10 +8,14 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Linked into plugin shared libraries by the adapter packages (pluginlib), so it must be PIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(core_types REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ------------------------------------------------------------------------------
 # core/: ROS-free. The planning ports (Planner, IkPort, CollisionPort, ScenePort), the POD
@@ -22,6 +26,7 @@ find_package(core_types REQUIRED)
 # ------------------------------------------------------------------------------
 add_library(motion_planner_core
   src/core/motion_planner.cpp
+  src/core/planning_pipeline.cpp
   src/core/planners/reachability_tilt.cpp
   src/core/planners/seed_preferring_ik.cpp
 )
@@ -31,9 +36,14 @@ target_include_directories(motion_planner_core PUBLIC
 target_link_libraries(motion_planner_core PUBLIC core_types::core_types Eigen3::Eigen)
 target_compile_features(motion_planner_core PUBLIC cxx_std_17)
 
+# ros/: backend selection. The YAML loader for the selection and the pluginlib registry; the only
+# part of this package that needs pluginlib and yaml-cpp (neither needs a running ROS node).
+add_library(motion_planner_ros src/ros/planning_config.cpp)
+target_link_libraries(motion_planner_ros PUBLIC motion_planner_core pluginlib::pluginlib yaml-cpp)
+
 # Optional .pcd/.ply point-cloud file loading (the only part of the core that needs PCL).
 find_package(PCL QUIET COMPONENTS common io)
-set(CORE_TARGETS motion_planner_core)
+set(CORE_TARGETS motion_planner_core motion_planner_ros)
 if(PCL_FOUND)
   add_library(motion_planner_pcd src/core/point_cloud_file_loader.cpp)
   target_link_libraries(motion_planner_pcd PUBLIC motion_planner_core ${PCL_LIBRARIES})
@@ -76,6 +86,9 @@ if(BUILD_TESTING)
   ament_add_gtest(wall_penetration_check_test test/core/wall_penetration_check_test.cpp)
   target_link_libraries(wall_penetration_check_test motion_planner_core)
 
+  ament_add_gtest(planning_pipeline_test test/core/planning_pipeline_test.cpp)
+  target_link_libraries(planning_pipeline_test motion_planner_ros)
+
   if(PCL_FOUND)
     ament_add_gtest(point_cloud_file_loader_test test/core/point_cloud_file_loader_test.cpp)
     target_link_libraries(point_cloud_file_loader_test motion_planner_pcd)
@@ -86,5 +99,5 @@ endif()
 
 ament_export_targets(export_motion_planner HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(core_types Eigen3)
+ament_export_dependencies(core_types Eigen3 pluginlib yaml-cpp)
 ament_package()

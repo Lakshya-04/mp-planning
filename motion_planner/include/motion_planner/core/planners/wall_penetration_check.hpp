@@ -6,10 +6,8 @@
  *          a point may sit past a known wall plane -- the independent check
  *          that stops PlanningRequest::allow_target_contact / an Allowed
  *          Collision Matrix relaxation from being exploited to travel
- *          arbitrarily far through the wall. See
- *          implementation_plan_manipulation_architecture.md §6.3 and
- *          Cartesian_Planner_Architecture.md ("Closing the exclusion's blast
- *          radius", Part B step 5, Part B.5).
+ *          arbitrarily far through the wall: the ACM exclusion only silences the
+ *          intended contact, so this bound is what closes its blast radius.
  * @author Lakshya Agarwal <100lakshyaagarwal@gmail.com>
  */
 

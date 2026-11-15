@@ -18,6 +18,8 @@ if(BUILD_TESTING)
   target_link_libraries(fk_ik_check moveit_ros_planning::moveit_robot_model_loader rclcpp::rclcpp)
   install(TARGETS fk_ik_check DESTINATION lib/${PROJECT_NAME})
   ament_add_pytest_test(test_moveit_swap test/test_moveit_swap.py TIMEOUT 600)
+  # every launch file imports and only names packages that exist
+  ament_add_pytest_test(test_launch_files test/test_launch_files.py TIMEOUT 300)
 endif()
 
 ament_package()

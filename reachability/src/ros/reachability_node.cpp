@@ -167,7 +167,8 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
       if (req->has_start) {
         start = Stand{Eigen::Vector2d(req->start_x, req->start_y), req->start_yaw};
       }
-      const StandPlan plan = planStands(*map_, r, start);
+      const StandPlan plan = req->max_stands > 0 ? planStands(*map_, r, start, req->max_stands) :
+                                                 planStands(*map_, r, start);
       for (const auto & a : plan.stands) {
         reachability_msgs::msg::Stand m;
         m.x = a.stand.arm_xy.x();

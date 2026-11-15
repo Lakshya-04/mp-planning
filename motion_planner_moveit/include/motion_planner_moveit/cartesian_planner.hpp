@@ -10,9 +10,7 @@
  *          wall-penetration-depth bound for tool-vs-wall contact. Plans only
  *          -- never executes; the caller hands PlanningResult::trajectory to
  *          an ExecutionPort (see execution/execution_port.hpp and
- *          Motion_Validator_Architecture.md Part A). See
- *          implementation_plan_manipulation_architecture.md §6.1/§6.3 and
- *          Cartesian_Planner_Architecture.md, Part B.
+ *          docs/design_principles.md).
  * @author Lakshya Agarwal <100lakshyaagarwal@gmail.com>
  */
 

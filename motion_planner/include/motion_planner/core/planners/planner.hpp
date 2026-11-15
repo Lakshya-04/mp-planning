@@ -19,7 +19,7 @@ public:
    *        execution, handing the returned PlanningResult::trajectory to an
    *        ExecutionPort (see execution/execution_port.hpp). This is the
    *        plan/execute decoupling described in
-   *        implementation_plan_manipulation_architecture.md §6.1/§6.5.
+   *        docs/design_principles.md.
    */
   virtual PlanningResult plan(const PlanningRequest & request) = 0;
   virtual IkResult ik(const IkRequest & request) = 0;

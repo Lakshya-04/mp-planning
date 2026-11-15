@@ -1,0 +1,22 @@
+<library path="motion_planner_moveit_plugins">
+  <class name="moveit_cartesian" type="motion_planner::MoveItCartesianPlugin"
+         base_class_type="motion_planner::PlannerPlugin">
+    <description>MoveIt Cartesian planner: jump detection, reachability-tilt retry, wall-contact ACM.</description>
+  </class>
+  <class name="moveit_ompl" type="motion_planner::MoveItOmplPlugin"
+         base_class_type="motion_planner::PlannerPlugin">
+    <description>OMPL free-space planner through MoveIt.</description>
+  </class>
+  <class name="moveit_ik" type="motion_planner::MoveItIkPlugin"
+         base_class_type="motion_planner::IkPlugin">
+    <description>MoveIt inverse kinematics (the configured kinematics plugin, seed-preferring retries).</description>
+  </class>
+  <class name="moveit_collision" type="motion_planner::MoveItCollisionPlugin"
+         base_class_type="motion_planner::CollisionPlugin">
+    <description>MoveIt planning-scene collision checks.</description>
+  </class>
+  <class name="moveit_scene" type="motion_planner::MoveItScenePlugin"
+         base_class_type="motion_planner::ScenePlugin">
+    <description>Feeds world geometry to move_group's planning scene.</description>
+  </class>
+</library>

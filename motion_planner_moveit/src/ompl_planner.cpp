@@ -188,7 +188,7 @@ PlanningResult OmplPlanner::plan(const PlanningRequest & request)
   // the planned trajectory (the same mechanism CartesianPlanner uses,
   // applied here for consistency and because it's the only one actually
   // reachable from this API) rather than something OMPL's own search can
-  // route around mid-plan. See Cartesian_Planner_Architecture.md, Part B.5.
+  // route around mid-plan.
   // wall_reference_pose is expressed in request.frame_id too -- resolve it into the planning
   // frame here (once), same fix as CartesianPlanner::plan().
   core_types::Pose wall_reference_pose = request.wall_reference_pose;

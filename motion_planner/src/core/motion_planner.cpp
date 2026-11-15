@@ -319,6 +319,21 @@ Planner & MotionPlanner::cartesianPlanner()
   return *cartesian_planner_;
 }
 
+void MotionPlanner::setSegmentKindModes(const std::map<std::string, std::string> & kind_to_mode)
+{
+  segment_kind_modes_.clear();
+  for (const auto & [kind, mode] : kind_to_mode) {
+    const std::string m = toLowerCopy(mode);
+    if ((kind != "contact" && kind != "transition") ||
+      (m != "cartesian" && m != "free_space" && m != "fsp"))
+    {
+      logger_->warn("ignoring segment mode override '" + kind + "' -> '" + mode + "'");
+      continue;
+    }
+    segment_kind_modes_[kind] = (m == "cartesian") ? "cartesian" : "fsp";
+  }
+}
+
 std::string MotionPlanner::resolveModePolicy(const SegmentRoutingSpec & routing) const
 {
   const std::string mode_hint = toLowerCopy(routing.mode_hint);
@@ -349,7 +364,14 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
   std::lock_guard<std::mutex> lock(planning_mutex_);
   SegmentPlanResult result;
 
-  const std::string routed_mode_policy = resolveModePolicy(routing);
+  std::string routed_mode_policy = resolveModePolicy(routing);
+  {
+    const auto override_it =
+      segment_kind_modes_.find(request.allow_target_contact ? "contact" : "transition");
+    if (override_it != segment_kind_modes_.end()) {
+      routed_mode_policy = override_it->second;
+    }
+  }
 
   const std::string planner_hint = toLowerCopy(routing.planner_hint);
   std::string planner_for_segment = effective_planner_;

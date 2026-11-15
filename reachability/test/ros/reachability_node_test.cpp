@@ -199,6 +199,22 @@ TEST(ReachabilityNode, PlanStandsCoversAWideWallAndAssignsEveryTargetOnce)
   }
 }
 
+TEST(ReachabilityNode, PlanStandsReportsWhatTheStandCapLeftUnplanned)
+{
+  Fixture f;
+  auto req = wideWall();
+  req->max_stands = 1;
+  const auto res = f.call<PlanStands>(req);
+  ASSERT_EQ(res->stands.size(), 1U) << res->message;
+  EXPECT_FALSE(res->success);   // a capped plan never claims full coverage
+  EXPECT_FALSE(res->not_planned.empty());
+  EXPECT_NE(res->message.find("not planned"), std::string::npos) << res->message;
+  std::multiset<uint32_t> seen(res->unreachable.begin(), res->unreachable.end());
+  seen.insert(res->not_planned.begin(), res->not_planned.end());
+  for (const auto & s : res->stands) {seen.insert(s.target_indices.begin(), s.target_indices.end());}
+  EXPECT_EQ(seen.size(), 10U);   // every target is placed or reported exactly once
+}
+
 TEST(ReachabilityNode, PlanStandsUsesTheBaseProfile)
 {
   const std::string profile = baseProfile(false);

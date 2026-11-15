@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(pluginlib REQUIRED)
 find_package(core_types REQUIRED)
 find_package(motion_planner REQUIRED)
 find_package(scene_model REQUIRED)
@@ -25,6 +26,14 @@ target_include_directories(curobo_planner PUBLIC
 target_link_libraries(curobo_planner PUBLIC motion_planner::motion_planner_core scene_model::scene_model_core core_types::core_types Eigen3::Eigen)
 ament_target_dependencies(curobo_planner PUBLIC rclcpp curobo_bridge_msgs geometry_msgs sensor_msgs)
 
+# pluginlib plugins (backend selection, docs/backend_selection.md); the planner library is linked
+# in, so it must be position independent.
+set_target_properties(curobo_planner PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(curobo_planner_plugins SHARED src/plugins.cpp)
+target_link_libraries(curobo_planner_plugins PUBLIC curobo_planner pluginlib::pluginlib)
+pluginlib_export_plugin_description_file(motion_planner plugins.xml)
+install(TARGETS curobo_planner_plugins ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+
 install(TARGETS curobo_planner EXPORT export_curobo_planner
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
@@ -33,9 +42,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(curobo_planner_test test/curobo_planner_test.cpp)
   target_link_libraries(curobo_planner_test curobo_planner)
+  ament_add_gtest(curobo_plugins_test test/curobo_plugins_test.cpp)
+  target_link_libraries(curobo_plugins_test curobo_planner motion_planner::motion_planner_ros)
 endif()
 
 ament_export_targets(export_curobo_planner HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp core_types motion_planner scene_model curobo_bridge_msgs geometry_msgs sensor_msgs Eigen3)
+ament_export_dependencies(rclcpp pluginlib core_types motion_planner scene_model curobo_bridge_msgs geometry_msgs sensor_msgs Eigen3)
 ament_package()

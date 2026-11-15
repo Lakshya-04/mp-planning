@@ -13,6 +13,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>pluginlib</depend>
   <depend>core_types</depend>
   <depend>motion_planner</depend>
   <depend>scene_model</depend>

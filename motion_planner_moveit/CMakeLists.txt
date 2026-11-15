@@ -9,8 +9,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MoveIt's apt binaries are built against the system octomap (liboctomap1.9), while ros-jazzy-octomap
+# ships a newer one that find_package(octomap) would pick first. Two octomap copies in one process
+# free the same statics twice at exit (malloc_consolidate abort). Resolve the one MoveIt links.
+if(NOT octomap_DIR AND EXISTS /usr/share/octomap/octomap-config.cmake)
+  set(octomap_DIR /usr/share/octomap CACHE PATH "octomap package directory (same copy as MoveIt)")
+endif()
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -63,6 +70,15 @@ ament_target_dependencies(motion_planner_moveit_lib PUBLIC
   rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs
   moveit_ros_planning_interface moveit_ros_planning moveit_msgs std_srvs octomap_msgs)
 
+# The static adapter library is linked into the plugin library, so it must be position independent.
+set_target_properties(motion_planner_moveit_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# pluginlib plugins (backend selection, docs/backend_selection.md).
+add_library(motion_planner_moveit_plugins SHARED src/plugins.cpp)
+target_link_libraries(motion_planner_moveit_plugins PUBLIC motion_planner_moveit_lib
+  motion_planner::motion_planner_core pluginlib::pluginlib)
+pluginlib_export_plugin_description_file(motion_planner plugins.xml)
+
 add_executable(world_model_loader_node src/world_model_loader_node.cpp)
 target_link_libraries(world_model_loader_node motion_planner_moveit_lib)
 ament_target_dependencies(world_model_loader_node rclcpp)
@@ -75,6 +91,10 @@ ament_target_dependencies(coverage_pass_demo_node
 
 install(TARGETS motion_planner_moveit_lib
   EXPORT export_motion_planner_moveit
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
+install(TARGETS motion_planner_moveit_plugins
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
@@ -100,6 +120,9 @@ if(BUILD_TESTING)
   ament_add_gtest(planners_test test/planners_test.cpp)
   target_link_libraries(planners_test motion_planner_moveit_lib)
 
+  ament_add_gtest(moveit_plugins_test test/moveit_plugins_test.cpp)
+  target_link_libraries(moveit_plugins_test motion_planner::motion_planner_ros)
+
   ament_add_gtest(moveit_planning_backend_test test/moveit_planning_backend_test.cpp)
   target_link_libraries(moveit_planning_backend_test motion_planner_moveit_lib)
 endif()
@@ -109,5 +132,5 @@ ament_export_include_directories(include)
 ament_export_dependencies(
   rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs moveit_ros_planning_interface
   moveit_ros_planning moveit_msgs core_types ros_adapters octomap octomap_msgs std_srvs
-  motion_planner)
+  motion_planner pluginlib)
 ament_package()

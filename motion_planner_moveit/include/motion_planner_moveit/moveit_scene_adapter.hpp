@@ -6,7 +6,7 @@
  *          WorldGeometryUpdate's own split (see scene_port.hpp):
  *            - `points` -> one octomap, the same representation the
  *              production point-cloud-fed occupancy_map_monitor pipeline
- *              already produces (7dof_serum_moveit.launch.py's live
+ *              already produces (the MoveIt launch's live
  *              PointCloudOctomapUpdater), so a static/offline injection here
  *              is a structural stand-in for that pipeline.
  *            - `boxes` -> named moveit_msgs::CollisionObject BOX primitives,

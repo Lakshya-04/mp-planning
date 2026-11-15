@@ -18,6 +18,10 @@
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>moveit_ros_planning</test_depend>
   <test_depend>rclcpp</test_depend>
+  <!-- test_launch_files.py imports every launch file in the workspace -->
+  <test_depend>launch</test_depend>
+  <test_depend>launch_ros</test_depend>
+  <test_depend>python3-pytest</test_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>
   <exec_depend>pick_ik</exec_depend>

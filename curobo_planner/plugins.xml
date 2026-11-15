@@ -1,0 +1,18 @@
+<library path="curobo_planner_plugins">
+  <class name="curobo" type="curobo_planner::CuroboPlannerPlugin"
+         base_class_type="motion_planner::PlannerPlugin">
+    <description>cuRobo v2 planner (joint and pose goals) as a client of the curobo_bridge node.</description>
+  </class>
+  <class name="curobo_ik" type="curobo_planner::CuroboIkPlugin"
+         base_class_type="motion_planner::IkPlugin">
+    <description>Collision-free IK from the cuRobo node.</description>
+  </class>
+  <class name="curobo_collision" type="curobo_planner::CuroboCollisionPlugin"
+         base_class_type="motion_planner::CollisionPlugin">
+    <description>State and motion validity from the cuRobo node (joint-space inputs only).</description>
+  </class>
+  <class name="curobo_scene" type="curobo_planner::CuroboScenePlugin"
+         base_class_type="motion_planner::ScenePlugin">
+    <description>Feeds world geometry (boxes, points) to the cuRobo node.</description>
+  </class>
+</library>

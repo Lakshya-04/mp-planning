@@ -3,11 +3,19 @@
 
 For the 7-DOF `lift_arm` group and the 6-DOF `arm` group: FK of the current state, IK for a pose
 8 cm away, then a collision-free plan (plan only) to that joint solution through move_group.
-With `--execute` the `lift_arm` plan is also executed through the controller, and the script then
-checks that the joints actually arrived at the solution (works for either controller). The 6-joint
-`arm` group stays plan-only: the single controller takes all seven joints, no partial goals. Exits non-zero
-with a message if any step fails.
+With `--strict-seed` the very first IK candidate must come back close to the seed (no hunting
+through alternatives): the test for a seed-preferring solver. With `--execute` the `lift_arm` plan
+is also executed through the controller, and the script then checks that the joints actually
+arrived at the solution (works for either controller). The 6-joint `arm` group stays plan-only:
+the single controller takes all seven joints, no partial goals. Exits non-zero with a message if
+any step fails.
+
+`--stress` instead measures IK quality: poses taken from 20 random configurations within `--spread=R` rad (default 0.4) of
+the seed, IK started from the seed; prints the success rate, how far the solutions land from the
+seed, and the *excess* over the generating configuration's own distance (a seed-preferring solver
+has little excess; one that jumps branches has a lot).
 """
+import math
 import sys
 
 from moveit_msgs.action import MoveGroup
@@ -20,6 +28,11 @@ from sensor_msgs.msg import JointState
 
 TIMEOUT = 60.0
 EXECUTE = '--execute' in sys.argv
+STRICT_SEED = '--strict-seed' in sys.argv
+STRESS = '--stress' in sys.argv
+SEEDS = next((int(a.split('=')[1]) for a in sys.argv if a.startswith('--seeds=')), 0)
+SPREAD = next((float(a.split('=')[1]) for a in sys.argv if a.startswith('--spread=')), 0.4)
+STRICT_MAX_MOVE = 0.3     # rad: a 5 cm target move should not move any joint further than this
 ARRIVAL_TOLERANCE = 0.03  # rad / m
 
 
@@ -92,12 +105,16 @@ class Smoke(Node):
             candidate = self.call(self.ik, ik_req)
             if candidate.error_code.val != 1:
                 tried.append(f'{axis}{delta:+.2f}: IK error {candidate.error_code.val}')
+                if STRICT_SEED:
+                    break
                 continue
             moved = max(abs(v - current[n]) for n, v in zip(
                 candidate.solution.joint_state.name, candidate.solution.joint_state.position)
                 if n in current)
-            if moved > 1.0:
+            if moved > (STRICT_MAX_MOVE if STRICT_SEED else 1.0):
                 tried.append(f'{axis}{delta:+.2f}: far solution ({moved:.2f} rad)')
+                if STRICT_SEED:
+                    break
                 continue
             ik, biggest = candidate, moved
             break
@@ -144,6 +161,71 @@ class Smoke(Node):
               f'{len(points)} waypoints, {duration:.2f} s, '
               f'{len(result.planned_trajectory.joint_trajectory.joint_names)} joints')
 
+    def stress(self, group, n=20):
+        """IK quality: success rate and distance from the seed over n reachable nearby targets."""
+        import random
+        rng = random.Random(1)
+        tip = 'tcp_link'
+        base = 'base_footprint'
+        joints = sorted(self.group_joints(group) & set(self.joint_state.name))
+        current = dict(zip(self.joint_state.name, self.joint_state.position))
+        solved, worst, total, excess, jumps = 0, 0.0, 0.0, 0.0, 0
+        for _ in range(n):
+            sample = JointState()
+            sample.name = list(self.joint_state.name)
+            sample.position = [v + (rng.uniform(-SPREAD, SPREAD) if name in joints else 0.0)
+                               for name, v in zip(self.joint_state.name, self.joint_state.position)]
+            fk_req = GetPositionFK.Request()
+            fk_req.header.frame_id = base
+            fk_req.fk_link_names = [tip]
+            fk_req.robot_state.joint_state = sample
+            fk = self.call(self.fk, fk_req)
+            if fk.error_code.val != 1:
+                continue
+            # --seeds=N mirrors motion_planner::SeedPreferringIk: N extra solves from perturbed
+            # seeds, each solution wrapped by whole turns toward the real seed (revolute joints
+            # only), keep the closest.
+            best = None
+            for attempt in range(SEEDS + 1):
+                seed = JointState()
+                seed.name = list(self.joint_state.name)
+                seed.position = [v + (rng.uniform(-0.3, 0.3) if attempt and nm in joints else 0.0)
+                                 for nm, v in zip(self.joint_state.name, self.joint_state.position)]
+                ik_req = GetPositionIK.Request()
+                ik_req.ik_request.group_name = group
+                ik_req.ik_request.robot_state.joint_state = seed
+                ik_req.ik_request.pose_stamped = fk.pose_stamped[0]
+                ik_req.ik_request.ik_link_name = tip
+                ik_req.ik_request.avoid_collisions = False
+                ik_req.ik_request.timeout.sec = 1
+                res = self.call(self.ik, ik_req)
+                if res.error_code.val != 1:
+                    continue
+                js = res.solution.joint_state
+                positions = list(js.position)
+                for i, (nm, v) in enumerate(zip(js.name, positions)):
+                    if nm in joints and 'lift' not in nm:
+                        turns = round((current[nm] - v) / (2 * math.pi))
+                        positions[i] = v + 2 * math.pi * turns
+                dist = max((abs(v - current[nm]) for nm, v in zip(js.name, positions)
+                            if nm in joints), default=0.0)
+                if best is None or dist < best[0]:
+                    best = (dist, js.name, positions)
+            if best is None:
+                continue
+            solved += 1
+            generating = max(abs(a - current[nm]) for nm, a in zip(sample.name, sample.position)
+                             if nm in joints)
+            moved = best[0]
+            worst = max(worst, moved)
+            total += moved
+            excess += max(0.0, moved - generating)
+            jumps += (moved - generating) > 0.5
+        mean = total / solved if solved else float('nan')
+        print(f'[{group}] STRESS spread {SPREAD} seeds {SEEDS}: solved {solved}/{n}, mean distance from seed '
+              f'{mean:.3f} rad, worst {worst:.3f}, mean excess over the generating config '
+              f'{excess / max(solved, 1):.3f}, branch jumps (>0.5 rad excess) {jumps}')
+
     def expect_arrival(self, group, target, group_joints):
         """After an executed plan: the live joint state must be at the solution."""
         deadline = self.get_clock().now().nanoseconds + int(10e9)
@@ -170,6 +252,10 @@ def main():
     node = Smoke()
     try:
         node.wait()
+        if STRESS:
+            node.stress('lift_arm')
+            node.stress('arm')
+            return 0
         node.check_group('lift_arm')
         node.check_group('arm')
     except RuntimeError as error:

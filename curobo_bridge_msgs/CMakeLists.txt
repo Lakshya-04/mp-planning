@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanJoint.srv"
   "srv/PlanPose.srv"
   "srv/SetWorld.srv"
+  "srv/SetEsdf.srv"
   "srv/SolveIk.srv"
   "srv/CheckMotion.srv"
   DEPENDENCIES geometry_msgs sensor_msgs trajectory_msgs

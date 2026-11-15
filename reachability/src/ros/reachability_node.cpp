@@ -1,10 +1,13 @@
 #include "reachability/ros/reachability_node.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <exception>
 #include <vector>
 
 #include "reachability/core/io.hpp"
 #include "reachability/core/lift_bands.hpp"
+#include "reachability/core/stands.hpp"
 
 namespace reachability
 {
@@ -22,6 +25,10 @@ Pose toIso(const geometry_msgs::msg::Pose & p)
   t.translation() = Vec3(p.position.x, p.position.y, p.position.z);
   return t;
 }
+
+constexpr double kMinGridStep = 0.02;    // m
+constexpr double kMinLiftStep = 0.01;    // m
+constexpr double kMaxStandWork = 5e7;    // station x height x target evaluations per greedy round
 }  // namespace
 
 ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
@@ -36,6 +43,18 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
     return;
   }
   RCLCPP_INFO(get_logger(), "loaded map %s (%zu non-zero cells)", file.c_str(), map_->nonzeroCells());
+  const auto base_file = declare_parameter<std::string>("base_profile", "");
+  if (!base_file.empty()) {
+    try {
+      base_ = loadBaseProfile(base_file);
+      RCLCPP_INFO(get_logger(), "base profile %s: %s", base_file.c_str(), base_->name.c_str());
+    } catch (const std::exception & e) {
+      // planning without the footprint would silently place the base into the wall: stay not ready
+      RCLCPP_ERROR(get_logger(), "cannot load base profile '%s': %s; node not ready", base_file.c_str(), e.what());
+      map_.reset();
+      return;
+    }
+  }
 
   using namespace reachability_msgs::srv;
   is_reachable_ = create_service<IsReachable>(
@@ -89,6 +108,90 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
       res->success = plan.unreachable.empty();
       if (!res->success) {
         res->message = std::to_string(plan.unreachable.size()) + " target(s) unreachable from this station";
+      }
+    });
+  stands_ = create_service<PlanStands>(
+    "~/plan_stands",
+    [this](const PlanStands::Request::SharedPtr req, PlanStands::Response::SharedPtr res) {
+      if (req->targets_world.empty()) {
+        res->message = "no targets";
+        return;
+      }
+      const Eigen::Vector3d n(req->wall_normal.x, req->wall_normal.y, req->wall_normal.z);
+      if (n.norm() < 1e-9) {
+        res->message = "wall_normal must be non-zero";
+        return;
+      }
+      StationRequest r;
+      for (const auto & p : req->targets_world) {r.targets_world.push_back(toIso(p));}
+      r.wall_point = Vec3(req->wall_point.x, req->wall_point.y, req->wall_point.z);
+      r.wall_normal = n.normalized();
+      auto pos = [](double v, double dflt) {return v > 0.0 ? v : dflt;};
+      const StationRequest d;
+      r.min_clearance = pos(req->min_clearance, d.min_clearance);
+      r.max_standoff = pos(req->max_standoff, d.max_standoff);
+      r.grid_step = pos(req->grid_step, d.grid_step);
+      r.lateral_margin = pos(req->lateral_margin, d.lateral_margin);
+      r.lift_min = req->lift_min;
+      r.lift_max = req->lift_max != 0.0 ? req->lift_max : d.lift_max;
+      r.lift_step = pos(req->lift_step, d.lift_step);
+      if (r.lift_max < r.lift_min) {
+        res->message = "lift_max (default " + std::to_string(d.lift_max) + ") must be >= lift_min";
+        return;
+      }
+      if (r.grid_step < kMinGridStep || r.lift_step < kMinLiftStep) {
+        res->message = "grid_step must be >= " + std::to_string(kMinGridStep) + " m and lift_step >= " +
+          std::to_string(kMinLiftStep) + " m";
+        return;
+      }
+      // the search is stations x lift heights x targets per round: refuse requests far beyond a real wall
+      double x_lo = 1e18, x_hi = -1e18, y_lo = 1e18, y_hi = -1e18;
+      for (const auto & t : r.targets_world) {
+        x_lo = std::min(x_lo, t.translation().x());
+        x_hi = std::max(x_hi, t.translation().x());
+        y_lo = std::min(y_lo, t.translation().y());
+        y_hi = std::max(y_hi, t.translation().y());
+      }
+      const double span = std::hypot(x_hi - x_lo, y_hi - y_lo) + 2.0 * r.lateral_margin;
+      const double stations = ((r.max_standoff - r.min_clearance) / r.grid_step + 1.0) * (span / r.grid_step + 1.0);
+      const double heights = (r.lift_max - r.lift_min) / r.lift_step + 1.0;
+      const double work = stations * heights * static_cast<double>(r.targets_world.size());
+      if (!std::isfinite(work) || work > kMaxStandWork) {
+        res->message = "search too large (" + std::to_string(work) + " station-height-target evaluations per stand, "
+          "limit " + std::to_string(kMaxStandWork) + "): raise grid_step or lift_step, or narrow the search";
+        return;
+      }
+      r.arm_mount_offset_z = req->arm_mount_offset_z;
+      r.base = base_;
+      std::optional<Stand> start;
+      if (req->has_start) {
+        start = Stand{Eigen::Vector2d(req->start_x, req->start_y), req->start_yaw};
+      }
+      const StandPlan plan = planStands(*map_, r, start);
+      for (const auto & a : plan.stands) {
+        reachability_msgs::msg::Stand m;
+        m.x = a.stand.arm_xy.x();
+        m.y = a.stand.arm_xy.y();
+        m.yaw = a.stand.yaw;
+        m.standoff = a.station.standoff;
+        m.footprint_clearance = a.station.footprint_clearance;
+        m.travel_s = a.travel_s;
+        m.target_indices.assign(a.targets.begin(), a.targets.end());
+        for (const auto & b : a.station.plan.bands) {
+          reachability_msgs::msg::LiftBand lb;
+          lb.lift_height = b.lift_height;
+          lb.pose_indices.assign(b.pose_indices.begin(), b.pose_indices.end());
+          m.bands.push_back(lb);
+        }
+        res->stands.push_back(m);
+      }
+      res->unreachable.assign(plan.unreachable.begin(), plan.unreachable.end());
+      res->not_planned.assign(plan.not_planned.begin(), plan.not_planned.end());
+      res->total_travel_s = plan.total_travel_s;
+      res->success = plan.unreachable.empty() && plan.not_planned.empty() && !plan.stands.empty();
+      if (!res->success) {
+        res->message = std::to_string(plan.unreachable.size()) + " target(s) no stand reaches, " +
+          std::to_string(plan.not_planned.size()) + " not planned (stand cap)";
       }
     });
 }

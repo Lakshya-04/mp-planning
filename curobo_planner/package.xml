@@ -15,6 +15,7 @@
   <depend>rclcpp</depend>
   <depend>core_types</depend>
   <depend>motion_planner</depend>
+  <depend>scene_model</depend>
   <depend>curobo_bridge_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>

@@ -2,10 +2,12 @@
 
   ros2 launch mobile_manipulator_moveit_config demo.launch.py arm:=ur10e
   ros2 launch mobile_manipulator_moveit_config demo.launch.py arm:=generic_6dof rviz:=false
+  ros2 launch mobile_manipulator_moveit_config demo.launch.py profile:=panda_telescopic
   ros2 launch mobile_manipulator_moveit_config demo.launch.py controller:=jtac
+  ros2 launch mobile_manipulator_moveit_config demo.launch.py ik:=kdl   (or ik:=pick_ik)
 
 Starts robot_state_publisher, ros2_control (mock hardware) with the joint state broadcaster and
-one 7-joint controller (lift + arm), move_group, and optionally RViz. `controller:=trajectory`
+one controller over the lift and all arm joints, move_group, and optionally RViz. `controller:=trajectory`
 (default) is a plain joint trajectory controller; `controller:=jtac` is the compliant
 JtacController with a scriptable F/T sensor (needs the compliant_trajectory_controller and
 ft_bridge_hardware packages), under the same name, so MoveIt and the wall-pass demo are unchanged.
@@ -25,11 +27,15 @@ from mobile_manipulator_moveit_config import build_moveit_config, controllers_fi
 
 
 def _nodes(context):
-    arm = LaunchConfiguration('arm').perform(context)
+    # `profile` (config/profiles/<name>.yaml) wins; with only `arm` the matching profile is used.
+    profile = LaunchConfiguration('profile').perform(context) or None
+    arm = LaunchConfiguration('arm').perform(context) or None
     controller = LaunchConfiguration('controller').perform(context)
+    ik = LaunchConfiguration('ik').perform(context)
     config_pkg = get_package_share_directory('mobile_manipulator_moveit_config')
-    moveit_config = build_moveit_config(arm, hardware=hardware_for(controller))
-    controllers = controllers_file(arm, controller)
+    moveit_config = build_moveit_config(
+        arm, hardware=hardware_for(controller), ik=ik, profile=profile)
+    controllers = controllers_file(arm, controller, profile)
 
     controller_spawn_args = ['lift_arm_controller', '--controller-manager', '/controller_manager']
     if controller == 'jtac':
@@ -65,10 +71,16 @@ def _nodes(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('arm', default_value='ur10e',
-                              description='ur10e, ur5e, ... or generic_6dof'),
+        DeclareLaunchArgument('profile', default_value='',
+                              description='robot profile: ur10e_telescopic (default), '
+                                          'generic_6dof_telescopic, panda_telescopic, or a path'),
+        DeclareLaunchArgument('arm', default_value='',
+                              description='ur10e, ur5e, ... generic_6dof or panda; picks the '
+                                          'matching profile when `profile` is empty'),
         DeclareLaunchArgument('controller', default_value='trajectory',
                               description='trajectory (joint_trajectory_controller) or jtac'),
+        DeclareLaunchArgument('ik', default_value='trac_ik',
+                              description='trac_ik (default), kdl or pick_ik'),
         DeclareLaunchArgument('rviz', default_value='true'),
         OpaqueFunction(function=_nodes),
     ])

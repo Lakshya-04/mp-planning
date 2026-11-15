@@ -34,6 +34,7 @@
 
 #include "motion_planner/core/planners/collision_port.hpp"
 #include "motion_planner/core/planners/ik_port.hpp"
+#include "motion_planner/core/planners/seed_preferring_ik.hpp"
 
 namespace rclcpp
 {
@@ -48,6 +49,7 @@ class PlanningSceneInterface;
 
 namespace moveit::core
 {
+class JointModelGroup;
 class RobotState;
 }  // namespace moveit::core
 
@@ -72,7 +74,27 @@ public:
 
   // CollisionPort / IkPort.
   CollisionResult collision(const CollisionRequest & request) override;
+  /// With a seed and ik_extra_seeds > 0 (node parameter, or setIkSeeding) this retries the solve
+  /// from perturbed seeds and returns the solution closest to the seed, wrapped by whole turns
+  /// and inside the joint limits (SeedPreferringIk). Otherwise one plain solve, as before.
   IkResult ik(const IkRequest & request) override;
+
+  /// One metre of a prismatic joint counts as this many radians when IK solutions are compared
+  /// (the 0.3 rad / 0.05 m jump thresholds of docs/design_principles.md give 6). Parameter
+  /// `ik_prismatic_factor` overrides it.
+  static constexpr double kDefaultPrismaticIkFactor = 6.0;
+
+  /// Fills limits, the revolute mask and the distance weights of `config` from the group's active
+  /// joints, in group order. Prismatic joints are not wrapped and get weight factor^2 (the weight
+  /// multiplies the squared difference, so 1 m weighs `prismatic_factor` rad); other joints weigh
+  /// 1. A joint without position bounds (continuous) gets infinite limits. False for a group
+  /// containing a multi-variable joint. Public so it is testable with a bare RobotModel, no live node.
+  static bool seedingConfigFromGroup(
+    const moveit::core::JointModelGroup * group, SeedPreferringIkConfig & config,
+    double prismatic_factor = kDefaultPrismaticIkFactor);
+
+  /// Overrides the ik_extra_seeds / ik_seed_perturbation parameters. 0 extra seeds = off.
+  void setIkSeeding(int extra_seeds, double perturbation);
 
   /// Lazily constructs the shared Node + MoveGroupInterface for
   /// planning_group (or reuses the existing one if the group hasn't
@@ -131,7 +153,15 @@ public:
     std::string & error_message);
 
 private:
+  /// One MoveIt solve from the request's seed; what ik() did before seed preferring.
+  IkResult solveIkOnce(const IkRequest & request);
+  /// Limits / revolute mask of the active group, for SeedPreferringIk. False if unavailable.
+  bool seedingConfigForGroup(SeedPreferringIkConfig & config, double prismatic_factor);
+
   std::shared_ptr<rclcpp::Node> node_;
+  int ik_extra_seeds_{0};
+  double ik_seed_perturbation_{0.3};
+  bool ik_seeding_overridden_{false};
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
   std::shared_ptr<planning_scene_monitor::PlanningSceneMonitor> planning_scene_monitor_;
   std::shared_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_interface_;

@@ -2,7 +2,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <set>
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
@@ -16,6 +19,7 @@ using namespace std::chrono_literals;
 using reachability_msgs::srv::GetBaseCandidates;
 using reachability_msgs::srv::IsReachable;
 using reachability_msgs::srv::PlanLiftBands;
+using reachability_msgs::srv::PlanStands;
 
 namespace
 {
@@ -37,10 +41,10 @@ std::string mapFile()
 
 struct Fixture
 {
-  Fixture()
+  explicit Fixture(const std::string & base_profile = "")
   {
     rclcpp::NodeOptions o;
-    o.parameter_overrides({{"map_file", mapFile()}});
+    o.parameter_overrides({{"map_file", mapFile()}, {"base_profile", base_profile}});
     node = std::make_shared<reachability::ReachabilityNode>(o);
     client_node = std::make_shared<rclcpp::Node>("client");
     exec.add_node(node);
@@ -68,6 +72,7 @@ struct Fixture
 template<> std::string Fixture::name<IsReachable>() {return "is_reachable";}
 template<> std::string Fixture::name<GetBaseCandidates>() {return "get_base_candidates";}
 template<> std::string Fixture::name<PlanLiftBands>() {return "plan_lift_bands";}
+template<> std::string Fixture::name<PlanStands>() {return "plan_stands";}
 
 geometry_msgs::msg::Pose wallPose(double x, double y, double z)
 {
@@ -143,6 +148,120 @@ TEST(ReachabilityNode, LiftBandsCoverAWallOrReportWhatIsLeft)
   EXPECT_FALSE(f.call<PlanLiftBands>(req)->success);  // invalid request is rejected, not served
 }
 
+namespace
+{
+std::shared_ptr<PlanStands::Request> wideWall()
+{
+  auto req = std::make_shared<PlanStands::Request>();
+  for (double y : {-3.0, -1.5, 0.0, 1.5, 3.0}) {
+    for (double z : {0.8, 1.4}) {
+      req->targets_world.push_back(wallPose(3.0, y, z));
+    }
+  }
+  req->wall_point.x = 3.0;
+  req->wall_normal.x = -1.0;
+  req->grid_step = 0.2;
+  req->lateral_margin = 0.2;
+  req->lift_max = 1.5;
+  req->arm_mount_offset_z = 0.2;
+  return req;
+}
+
+std::string baseProfile(bool strafe)
+{
+  const char * dir = std::getenv("TEST_TMPDIR");
+  const std::string path = std::string(dir ? dir : "/tmp") + "/reachability_stands_base_" + std::to_string(::getpid()) +
+    (strafe ? "_omni.yaml" : "_diff.yaml");
+  std::ofstream(path) << "base:\n  name: t\n  drive_type: " << (strafe ? "omni" : "diff")
+                      << "\n  can_strafe: " << (strafe ? "true" : "false")
+                      << "\n  footprint: [[-0.4, -0.25], [0.4, -0.25], [0.4, 0.25], [-0.4, 0.25]]\n";
+  return path;
+}
+}  // namespace
+
+TEST(ReachabilityNode, PlanStandsCoversAWideWallAndAssignsEveryTargetOnce)
+{
+  Fixture f;
+  const auto res = f.call<PlanStands>(wideWall());
+  EXPECT_FALSE(f.node->hasBase());
+  ASSERT_GE(res->stands.size(), 2U) << res->message;
+  std::multiset<uint32_t> seen(res->unreachable.begin(), res->unreachable.end());
+  seen.insert(res->not_planned.begin(), res->not_planned.end());
+  for (const auto & s : res->stands) {seen.insert(s.target_indices.begin(), s.target_indices.end());}
+  EXPECT_EQ(seen.size(), 10U);
+  for (uint32_t i = 0; i < 10; ++i) {EXPECT_EQ(seen.count(i), 1U) << i;}
+  EXPECT_EQ(res->total_travel_s, 0.0);   // no base profile: no travel time
+  for (const auto & s : res->stands) {    // lift band indices refer to the request's targets
+    const std::set<uint32_t> mine(s.target_indices.begin(), s.target_indices.end());
+    for (const auto & b : s.bands) {
+      for (const auto k : b.pose_indices) {EXPECT_EQ(mine.count(k), 1U);}
+    }
+  }
+}
+
+TEST(ReachabilityNode, PlanStandsUsesTheBaseProfile)
+{
+  const std::string profile = baseProfile(false);
+  Fixture f(profile);
+  std::remove(profile.c_str());      // the node has read it
+  ASSERT_TRUE(f.node->hasBase());
+  auto req = wideWall();
+  req->has_start = true;
+  req->start_x = 1.0;
+  req->start_y = -3.0;
+  const auto res = f.call<PlanStands>(req);
+  ASSERT_GE(res->stands.size(), 2U) << res->message;
+  EXPECT_GT(res->total_travel_s, 0.0);
+  for (const auto & s : res->stands) {EXPECT_GE(s.footprint_clearance, 0.3 - 1e-9);}
+}
+
+TEST(ReachabilityNode, PlanStandsRejectsABadRequest)
+{
+  Fixture f;
+  auto req = wideWall();
+  req->wall_normal.x = 0.0;
+  EXPECT_FALSE(f.call<PlanStands>(req)->success);
+  EXPECT_FALSE(f.call<PlanStands>(std::make_shared<PlanStands::Request>())->success);
+}
+
+TEST(ReachabilityNode, UnloadableBaseProfileLeavesTheNodeNotReady)
+{
+  rclcpp::NodeOptions o;
+  o.parameter_overrides({{"map_file", mapFile()}, {"base_profile", std::string("/nonexistent/base.yaml")}});
+  reachability::ReachabilityNode node(o);
+  EXPECT_FALSE(node.ready());   // would otherwise plan stands without the footprint check
+}
+TEST(ReachabilityNode, PlanStandsRejectsStepsThatWouldRunForever)
+{
+  Fixture f;
+  auto req = wideWall();
+  req->grid_step = 0.01;
+  auto res = f.call<PlanStands>(req);
+  EXPECT_FALSE(res->success);
+  EXPECT_NE(res->message.find("grid_step"), std::string::npos) << res->message;
+
+  req = wideWall();
+  req->lift_step = 0.001;
+  res = f.call<PlanStands>(req);
+  EXPECT_FALSE(res->success);
+  EXPECT_NE(res->message.find("lift_step"), std::string::npos) << res->message;
+
+  req = wideWall();
+  req->max_standoff = 1e6;      // huge search area
+  res = f.call<PlanStands>(req);
+  EXPECT_FALSE(res->success);
+  EXPECT_TRUE(res->stands.empty());
+}
+TEST(ReachabilityNode, PlanStandsRejectsAnEmptyLiftRange)
+{
+  Fixture f;
+  auto req = wideWall();
+  req->lift_min = 1.8;
+  req->lift_max = 0.0;          // default 1.5 is below lift_min
+  const auto res = f.call<PlanStands>(req);
+  EXPECT_FALSE(res->success);
+  EXPECT_NE(res->message.find("lift_max"), std::string::npos) << res->message;
+}
 TEST(ReachabilityNode, MissingMapFileLeavesTheNodeNotReady)
 {
   rclcpp::NodeOptions o;

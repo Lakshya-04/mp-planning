@@ -41,18 +41,33 @@ Station chooseStation(const Map4D & map, const StationRequest & q)
   for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
     for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
       const Vec3 p = on_wall + u * a + n * d;
+      double yaw = 0.0, clearance = 0.0;
+      if (q.base) {
+        yaw = bestYaw(*q.base, Eigen::Vector2d(p.x(), p.y()), Eigen::Vector2d(on_wall.x(), on_wall.y()),
+          Eigen::Vector2d(n.x(), n.y()), &clearance);
+        if (clearance < q.min_clearance - 1e-9) {continue;}   // the footprint would not fit here
+      }
       const auto plan = planLiftBands(map, q.targets_world, p.x(), p.y(), heights, q.arm_mount_offset_z);
       ++best.evaluated;
       if (plan.reachable_count == 0) {
         continue;
       }
-      const Key key{plan.unreachable.size(), plan.bands.size(), std::abs(a - u_mid), d};
+      // A strafing base can have every nearby station cost the same (the final turn dominates),
+      // so the distance breaks that tie.
+      double tie = std::abs(a - u_mid);
+      if (q.base && q.from) {
+        const Stand to{Eigen::Vector2d(p.x(), p.y()), yaw};
+        tie = travelTime(*q.base, *q.from, to) + 1e-3 * (to.arm_xy - q.from->arm_xy).norm();
+      }
+      const Key key{plan.unreachable.size(), plan.bands.size(), tie, d};
       if (!best.found || key < best_key) {
         best_key = key;
         best.found = true;
         best.x = p.x();
         best.y = p.y();
         best.standoff = d;
+        best.yaw = yaw;
+        best.footprint_clearance = clearance;
         best.plan = plan;
       }
     }

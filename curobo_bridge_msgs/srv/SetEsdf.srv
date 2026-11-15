@@ -1,0 +1,14 @@
+# Replaces the planner's distance field (keeping its explicit boxes). The planner must have been
+# started with an ESDF grid (esdf_dims / esdf_voxel_size) whose shape equals nx, ny, nz.
+uint32 nx
+uint32 ny
+uint32 nz
+float64 voxel_size
+# Centre of the whole grid box in the robot base frame.
+float64[3] center
+# nx * ny * nz values, x-major (index = ix * ny * nz + iy * nz + iz); metres, positive outside
+# obstacles, negative inside.
+float32[] distance
+---
+bool success
+string message

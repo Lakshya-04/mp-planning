@@ -107,6 +107,27 @@ void VampPlanner::setWorld(const mp::WorldGeometryUpdate & world)
   impl_->world_set = true;
 }
 
+bool VampPlanner::updateWorldGeometry(const mp::WorldGeometryUpdate & update, std::string & error_message)
+{
+  error_message.clear();
+  if (!impl_->options.base_frame.empty() && !update.frame_id.empty() &&
+    update.frame_id != impl_->options.base_frame)
+  {
+    error_message = "world frame '" + update.frame_id + "' differs from the planning base frame '" +
+      impl_->options.base_frame + "' and VAMP cannot transform it";
+    return false;
+  }
+  setWorld(update);
+  return true;
+}
+
+bool VampPlanner::clearWorldGeometry(std::string & error_message)
+{
+  error_message.clear();
+  clearWorld();
+  return true;
+}
+
 mp::PlanningResult VampPlanner::plan(const mp::PlanningRequest & request)
 {
   const auto t0 = std::chrono::steady_clock::now();

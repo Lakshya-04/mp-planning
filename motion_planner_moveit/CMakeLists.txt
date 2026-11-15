@@ -33,6 +33,7 @@ find_package(PCL REQUIRED COMPONENTS common io)
 find_package(core_types REQUIRED)
 find_package(ros_adapters REQUIRED)
 find_package(motion_planner REQUIRED)
+find_package(mobile_manipulator_profile REQUIRED)
 
 # ------------------------------------------------------------------------------
 # MoveIt adapter: implements the motion_planner ports on top of MoveIt / OMPL.
@@ -67,7 +68,8 @@ target_link_libraries(world_model_loader_node motion_planner_moveit_lib)
 ament_target_dependencies(world_model_loader_node rclcpp)
 
 add_executable(coverage_pass_demo_node src/coverage_pass_demo_node.cpp)
-target_link_libraries(coverage_pass_demo_node motion_planner_moveit_lib nlohmann_json::nlohmann_json)
+target_link_libraries(coverage_pass_demo_node motion_planner_moveit_lib nlohmann_json::nlohmann_json
+  mobile_manipulator_profile::mobile_manipulator_profile)
 ament_target_dependencies(coverage_pass_demo_node
   rclcpp rclcpp_action control_msgs std_msgs geometry_msgs)
 
@@ -90,6 +92,8 @@ if(BUILD_TESTING)
     set(ament_cmake_uncrustify_FOUND TRUE)
     set(ament_cmake_flake8_FOUND TRUE)
     set(ament_cmake_pep257_FOUND TRUE)
+    set(ament_cmake_xmllint_FOUND TRUE)
+    set(ament_cmake_lint_cmake_FOUND TRUE)
     ament_lint_auto_find_test_dependencies()
   endif()
 

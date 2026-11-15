@@ -7,6 +7,7 @@ lazily: importing this module works without a GPU stack, constructing a CuroboPl
 Frames: everything is in the robot base frame, the same convention as the VAMP adapter. Poses are
 [x, y, z] + quaternion [w, x, y, z] (cuRobo's order).
 """
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
@@ -113,11 +114,64 @@ def points_to_esdf(points: np.ndarray, spec: EsdfSpec, max_distance: float = 1.0
     return np.clip(outside - inside_d, -max_distance, max_distance).astype(np.float32)
 
 
+# One metre of a prismatic joint counts as this many radians when solutions are compared. 6 comes from
+# the per-joint-type jump thresholds in docs/design_principles.md (0.3 rad revolute vs 0.05 m
+# prismatic): an unweighted norm treats 1 m of lift as 1 rad of shoulder.
+PRISMATIC_IK_FACTOR = 6.0
+
+
+def ik_weights_from_joint_types(joint_names: Sequence[str], prismatic_joints: Sequence[str] = (),
+                                factor: float = PRISMATIC_IK_FACTOR) -> List[float]:
+    """Per-joint weights for the squared distance of `closest_solution`: factor**2 on the named
+    prismatic joints (so 1 m weighs like `factor` rad), 1 on everything else."""
+    prismatic = set(prismatic_joints)
+    return [float(factor) ** 2 if name in prismatic else 1.0 for name in joint_names]
+
+
+def closest_solution(solutions: np.ndarray, success: np.ndarray, seed: Sequence[float],
+                     limits: Optional[Tuple[Sequence[float], Sequence[float]]] = None,
+                     weights: Optional[Sequence[float]] = None):
+    """Pick the successful IK solution nearest `seed` out of a batch (cuRobo solves many seeds at once
+    and returns all of them; the first row is not the closest). Each joint is shifted by whole turns
+    toward the seed, but only when it is more than pi away, so metre-scale prismatic joints (a lift)
+    are never touched. With `limits=(lower, upper)` a shift that would leave the limits is not applied (the
+    solver's own value is kept for that joint). Returns (joints, distance, row), `row` being the index into `solutions` it came from, or None when
+    nothing succeeded. Without limits, a joint that is not a turn but spans more than pi could be shifted
+    wrongly; cuRobo's limits are passed in solve_ik so such shifts stay inside the real range.
+    `weights` (one per joint, applied to the squared difference; see ik_weights_from_joint_types)
+    keep metres and radians apart in the distance; without them the norm is unweighted. The returned
+    distance is the weighted one."""
+    solutions = np.asarray(solutions, dtype=float).reshape(-1, len(seed))
+    success = np.asarray(success, dtype=bool).reshape(-1)
+    if success.shape[0] != solutions.shape[0]:      # unexpected layout: trust the first row only
+        success = np.zeros(solutions.shape[0], dtype=bool)
+        success[:1] = True
+    seed = np.asarray(seed, dtype=float)
+    w = np.ones(len(seed)) if weights is None else np.asarray(weights, dtype=float).reshape(-1)
+    if w.shape != seed.shape:
+        raise ValueError(f'{w.shape[0]} weights for {seed.shape[0]} joints')
+    best, best_distance, best_row = None, np.inf, -1
+    for index in np.flatnonzero(success):
+        row = solutions[index]
+        diff = row - seed
+        shifted = np.where(np.abs(diff) > np.pi, row - 2 * np.pi * np.round(diff / (2 * np.pi)), row)
+        if limits is not None:
+            lower, upper = np.asarray(limits[0], dtype=float), np.asarray(limits[1], dtype=float)
+            outside = (shifted < lower - 1e-9) | (shifted > upper + 1e-9)
+            shifted = np.where(outside, row, shifted)
+        distance = float(np.sqrt(np.sum(w * (shifted - seed) ** 2)))
+        if distance < best_distance:
+            best, best_distance, best_row = shifted, distance, int(index)
+    return None if best is None else (best.tolist(), best_distance, best_row)
+
+
 class CuroboPlanner:
     """Joint-goal and pose-goal planning with cuRobo v2 on the GPU."""
 
     def __init__(self, robot: str = 'franka.yml', max_goalset: int = 1, max_boxes: int = 256,
-                 esdf: Optional[EsdfSpec] = None, warmup: bool = True):
+                 esdf: Optional[EsdfSpec] = None, warmup: bool = True,
+                 prismatic_joints: Sequence[str] = (), ik_prismatic_factor: float = PRISMATIC_IK_FACTOR,
+                 ik_weights: Optional[Sequence[float]] = None):
         import torch
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
         from curobo.types import JointState
@@ -137,7 +191,13 @@ class CuroboPlanner:
             robot=robot, max_goalset=max_goalset, collision_cache=cache))
         if warmup:
             self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
+        # IK picks the solution nearest the seed: metres of a prismatic joint must not count as radians.
+        self._ik_weights = (list(ik_weights) if ik_weights else
+                            ik_weights_from_joint_types(self.joint_names, prismatic_joints, ik_prismatic_factor))
         self._world_set = False
+        self._boxes: List[Box] = []      # explicit boxes of the current world (kept by set_esdf)
+        self._field: Optional[np.ndarray] = None            # current ESDF field (kept by set_world)
+        self._field_center: Optional[Sequence[float]] = None
 
     def close(self) -> None:
         """Releases the GPU resources. Use one planner per process, or close one before building
@@ -173,6 +233,10 @@ class CuroboPlanner:
         cache, conservative). `esdf` passes a ready-made field instead (nx, ny, nz; metres, positive
         outside obstacles, e.g. from the scene model or a mapper) on the configured grid, centred
         at `esdf_center`. Explicit boxes beyond the cache are an error, not silently dropped.
+
+        A call with neither `points` nor `esdf` replaces the boxes and KEEPS the current ESDF field
+        (so setEsdf followed by a box-only world update, or the reverse, gives the same world);
+        `clear_world` is what removes the field.
         """
         from curobo.scene import Cuboid, Scene
 
@@ -191,17 +255,31 @@ class CuroboPlanner:
                 field = points_to_esdf(points, self._grid(esdf_center))
             else:
                 all_boxes += voxelize_points(points, point_voxel, self.max_boxes - len(all_boxes))
+        elif self.esdf is not None and self._field is not None:
+            field, esdf_center = self._field, self._field_center   # box-only update: keep the field
         cuboids = [Cuboid(name=b.id, dims=list(b.size), pose=[*b.center, *b.quat_wxyz]) for b in all_boxes]
         voxels = self._voxel_scene(field, esdf_center) if self.esdf is not None else []
         self._planner.update_world(Scene(cuboid=cuboids, voxel=voxels))
         self._world_set = True
+        self._boxes = list(boxes)
+        self._field, self._field_center = field, esdf_center
         return len(cuboids) + (1 if field is not None else 0)
+
+    def set_esdf(self, esdf: np.ndarray, center: Optional[Sequence[float]] = None) -> int:
+        """Replaces only the distance field, keeping the explicit boxes already in the world.
+
+        `esdf` is (nx, ny, nz) metres, positive outside obstacles, on the configured grid, centred at
+        `center` (default: the grid's configured centre). Returns the number of obstacles now in the
+        world (boxes + the field)."""
+        return self.set_world(self._boxes, esdf=esdf, esdf_center=center)
 
     def clear_world(self) -> None:
         from curobo.scene import Scene
         voxels = self._voxel_scene(None, None) if self.esdf is not None else []
         self._planner.update_world(Scene(voxel=voxels))
         self._world_set = False
+        self._boxes = []
+        self._field, self._field_center = None, None
 
     # ---- ESDF helpers -----------------------------------------------------------------------
     def _grid(self, center: Optional[Sequence[float]]) -> EsdfSpec:
@@ -246,6 +324,18 @@ class CuroboPlanner:
             quaternion=t.tensor([[[[list(quat_wxyz)]]]], device='cuda', dtype=t.float32))
         return self._wrap(self._planner.plan_pose(goal, self._state(start)))
 
+    def _joint_limits(self):
+        """(lower, upper) joint limits from cuRobo, or None if this cuRobo build does not expose them."""
+        try:
+            pos = self._planner.kinematics.get_joint_limits().position.detach().cpu().numpy()
+            return pos[0].tolist(), pos[1].tolist()
+        except Exception as e:
+            if not getattr(self, '_warned_limits', False):
+                self._warned_limits = True
+                logging.getLogger(__name__).warning(
+                    'cuRobo joint limits unavailable (%s): IK turn shifts are not limit-checked', e)
+            return None
+
     # ---- IK and validity ---------------------------------------------------------------------
     def solve_ik(self, position: Sequence[float], quat_wxyz: Sequence[float] = (1.0, 0.0, 0.0, 0.0),
                  seed: Optional[Sequence[float]] = None) -> IkResult:
@@ -264,17 +354,21 @@ class CuroboPlanner:
             quaternion=t.tensor([[[[list(quat_wxyz)]]]], device='cuda', dtype=t.float32))
         res = self._planner.ik_solver.solve_pose(goal, current_state=self._state(seed))
         out = IkResult(joint_names=self.joint_names)
-        if not bool(res.success.any()):
+        picked = closest_solution(res.solution.detach().cpu().numpy(),
+                                  res.success.detach().cpu().numpy(), seed, self._joint_limits(),
+                                  self._ik_weights)
+        if picked is None:
             out.failure_reason_code = 'no_solution'
             out.failure_stage = 'planning'
             out.message = 'cuRobo found no collision-free IK solution for this pose'
             return out
         out.success = True
-        out.joints = res.solution.reshape(-1, self.dimension)[0].detach().cpu().numpy().tolist()
+        out.joints = picked[0]
         for name, attr in (('position_error', 'position_error'), ('rotation_error', 'rotation_error')):
             value = getattr(res, attr, None)
-            if value is not None:
-                setattr(out, name, float(value.reshape(-1)[0]))
+            if value is not None:       # the error of the row we picked, not row 0
+                flat = value.reshape(-1)
+                setattr(out, name, float(flat[picked[2]] if flat.shape[0] > picked[2] else flat[0]))
         return out
 
     def check_states(self, states: Sequence[Sequence[float]]) -> List[bool]:

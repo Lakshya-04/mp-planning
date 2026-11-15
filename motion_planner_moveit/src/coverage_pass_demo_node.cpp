@@ -12,6 +12,7 @@
  * @author Lakshya Agarwal <100lakshyaagarwal@gmail.com>
  */
 
+#include "mobile_manipulator_profile/profile.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -58,8 +59,8 @@ core_types::Pose makePose(
   return pose;
 }
 
-// Live /joint_states, in the arm_7dof group's own variable order (lift_prismatic_joint,
-// joint1..6 -- see moveit_config's SRDF group definition). Reading actual current joints
+// Live /joint_states, in the whole-body group's own variable order (the lift joint, then the
+// arm joints -- see the robot profile and moveit_config's SRDF group definition). Reading actual current joints
 // instead of trusting recordExecutionOutcome()'s "continuity" tracking (the raw planned
 // trajectory's end state) matters right after a contact segment: admittance keeps nudging the
 // real joints to relieve force for as long as it's engaged, so the robot's true position drifts
@@ -202,13 +203,26 @@ int main(int argc, char ** argv)
   // Robot-specific names are parameters; the defaults match mobile_manipulator_description with
   // mobile_manipulator_moveit_config. The controller must be a JTAC (compliant trajectory
   // controller) instance under `controller_name`: this demo drives its force topics.
-  node->declare_parameter<std::string>("planning_group", "lift_arm");
-  node->declare_parameter<std::string>("planning_frame", "base_footprint");
+  // The defaults come from the robot profile (`profile` parameter, config/profiles/<name>.yaml);
+  // an explicit planning_group / planning_frame parameter still wins (empty = use the profile).
+  node->declare_parameter<std::string>("profile", mobile_manipulator_profile::kDefaultProfile);
+  std::string profile_warning;
+  const auto profile = mobile_manipulator_profile::loadProfileOrDefaults(
+    node->get_parameter("profile").as_string(), profile_warning);
+  if (!profile_warning.empty()) {
+    RCLCPP_WARN(node->get_logger(), "%s", profile_warning.c_str());
+  }
+  node->declare_parameter<std::string>("planning_group", "");
+  node->declare_parameter<std::string>(
+    "planning_frame", profile.frameOr("world_base", "base_footprint"));
   node->declare_parameter<std::string>("controller_name", "lift_arm_controller");
   // Height of base_link above planning_frame: coverage_output.json is in base_link (see
   // wall_scene.json's frame_id) while this node's targets are expressed in planning_frame.
   node->declare_parameter<double>("base_link_offset_z", 0.2);
-  const std::string planning_group = node->get_parameter("planning_group").as_string();
+  std::string planning_group = node->get_parameter("planning_group").as_string();
+  if (planning_group.empty()) {
+    planning_group = profile.whole_body_group;
+  }
   const std::string frame_id = node->get_parameter("planning_frame").as_string();
   const std::string controller_name = node->get_parameter("controller_name").as_string();
   const std::string controller_ns = "/" + controller_name;

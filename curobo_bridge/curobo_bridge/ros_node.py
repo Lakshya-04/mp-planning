@@ -3,7 +3,9 @@
 Parameters: `robot` (cuRobo robot config: a bundled name like franka.yml or an absolute path to one
 made by docker/tools/generate_curobo_robot.py), `max_boxes` (obstacle cache size), and optionally
 `esdf_dims` (3 values, m), `esdf_voxel_size`, `esdf_center` to reserve an ESDF grid: set_world points
-then become a distance field instead of cubes. Services (under
+then become a distance field instead of cubes. IK picks the solution nearest the seed: name the
+prismatic joints in `prismatic_joints` (a list of joint names; 1 m then weighs `ik_prismatic_factor`
+rad, default 6) or give `ik_weights` (one per joint, on the squared difference) to override. Services (under
 the node name): ~/plan_joint, ~/plan_pose, ~/set_world. Everything is in the robot base frame.
 
 Run it with the Python that has torch and cuRobo (in the gpu image that is the venv, not the system
@@ -15,12 +17,12 @@ can take a minute); until then the services answer `unavailable` instead of bloc
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
-from curobo_bridge_msgs.srv import CheckMotion, PlanJoint, PlanPose, SetWorld, SolveIk
+from curobo_bridge_msgs.srv import CheckMotion, PlanJoint, PlanPose, SetEsdf, SetWorld, SolveIk
 from rclpy.node import Node
 from sensor_msgs_py import point_cloud2
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from curobo_bridge.planner import Box, CuroboPlanner, EsdfSpec, PlanResult
+from curobo_bridge.planner import PRISMATIC_IK_FACTOR, Box, CuroboPlanner, EsdfSpec, PlanResult
 
 
 def _duration(seconds: float) -> Duration:
@@ -66,11 +68,15 @@ class CuroboPlannerNode(Node):
         esdf_dims = [d for d in esdf_dims if d > 0.0]
         esdf_voxel = float(self.declare_parameter('esdf_voxel_size', 0.04).value)
         esdf_center = self.declare_parameter('esdf_center', [0.0, 0.0, 0.0]).value
+        prismatic = [n for n in self.declare_parameter('prismatic_joints', ['']).value if n]
+        ik_prismatic_factor = float(self.declare_parameter('ik_prismatic_factor', PRISMATIC_IK_FACTOR).value)
+        ik_weights = [w for w in self.declare_parameter('ik_weights', [0.0]).value if w > 0.0]
         self._planner = planner
         if self._planner is None:
             try:
                 self._planner = CuroboPlanner(
-                    robot, max_boxes=max_boxes,
+                    robot, max_boxes=max_boxes, prismatic_joints=prismatic,
+                    ik_prismatic_factor=ik_prismatic_factor, ik_weights=ik_weights,
                     esdf=esdf_from_parameters(esdf_dims, esdf_voxel, esdf_center))
                 self.get_logger().info(
                     f'cuRobo ready: {self._planner.dimension} joints, tool {self._planner.tool_frames}')
@@ -79,6 +85,7 @@ class CuroboPlannerNode(Node):
         self.create_service(PlanJoint, '~/plan_joint', self._plan_joint)
         self.create_service(PlanPose, '~/plan_pose', self._plan_pose)
         self.create_service(SetWorld, '~/set_world', self._set_world)
+        self.create_service(SetEsdf, '~/set_esdf', self._set_esdf)
         self.create_service(SolveIk, '~/solve_ik', self._solve_ik)
         self.create_service(CheckMotion, '~/check_motion', self._check_motion)
 
@@ -97,6 +104,32 @@ class CuroboPlannerNode(Node):
         p, q = request.goal.position, request.goal.orientation
         return fill(response, self._planner.plan_pose(
             list(request.start), (p.x, p.y, p.z), (q.w, q.x, q.y, q.z)))   # ROS xyzw -> cuRobo wxyz
+
+    def _set_esdf(self, request, response):
+        if self._planner is None:
+            response.message = 'cuRobo planner is not running'
+            return response
+        shape = (request.nx, request.ny, request.nz)
+        grid = getattr(self._planner, 'esdf', None)
+        if grid is None:
+            response.message = 'no ESDF grid configured: start the node with esdf_dims'
+            return response
+        if len(request.distance) != request.nx * request.ny * request.nz:
+            response.message = f'distance has {len(request.distance)} values, expected {shape[0] * shape[1] * shape[2]}'
+            return response
+        if shape != grid.shape() or abs(request.voxel_size - grid.voxel_size) > 1e-9:
+            response.message = (f'grid {shape} at {request.voxel_size} m does not match the planner\'s '
+                                f'{grid.shape()} at {grid.voxel_size} m')
+            return response
+        field = np.asarray(request.distance, dtype=np.float32).reshape(shape)
+        try:
+            self._planner.set_esdf(field, tuple(request.center))
+            response.success = True
+        except ValueError as e:
+            response.message = str(e)
+        except Exception as e:      # a CUDA / cuRobo failure must come back as a failed response
+            response.message = f'ESDF update failed: {e}'
+        return response
 
     def _solve_ik(self, request, response):
         if self._planner is None:
@@ -146,7 +179,11 @@ class CuroboPlannerNode(Node):
             raw = point_cloud2.read_points(request.points, field_names=('x', 'y', 'z'), skip_nans=True)
             points = np.column_stack([raw['x'], raw['y'], raw['z']]) if len(raw) else None
         try:
-            response.box_count = self._planner.set_world(boxes, points, request.point_voxel or 0.05)
+            if not boxes and points is None:      # an empty world is a clear (ClearWorld sends exactly this)
+                self._planner.clear_world()
+                response.box_count = 0
+            else:
+                response.box_count = self._planner.set_world(boxes, points, request.point_voxel or 0.05)
             response.success = True
         except ValueError as e:
             response.message = str(e)

@@ -21,6 +21,8 @@ add_library(reachability_core
   src/core/builder.cpp
   src/core/lift_bands.cpp
   src/core/station.cpp
+  src/core/base_model.cpp
+  src/core/stands.cpp
   src/core/io.cpp
 )
 target_include_directories(reachability_core PUBLIC
@@ -60,11 +62,17 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t map4d builder lift_bands io station)
+  foreach(t map4d builder lift_bands io station base_model stands)
     ament_add_gtest(${t}_test test/core/${t}_test.cpp)
     target_link_libraries(${t}_test reachability_core)
     target_include_directories(${t}_test PRIVATE test/core)
   endforeach()
+  set(_profiles ${CMAKE_CURRENT_SOURCE_DIR}/../../description/mobile_manipulator_description/config/profiles)
+  if(EXISTS ${_profiles})
+    target_compile_definitions(base_model_test PRIVATE PROFILES_DIR="${_profiles}")
+  else()
+    message(WARNING "reachability: ${_profiles} not found, the shipped-profile schema test will be skipped")
+  endif()
   if(TARGET reachability_ros)
     ament_add_gtest(reachability_node_test test/ros/reachability_node_test.cpp)
     target_link_libraries(reachability_node_test reachability_ros)

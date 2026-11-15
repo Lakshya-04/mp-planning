@@ -25,11 +25,15 @@ struct Options
   double nominal_joint_speed{1.0};   ///< rad/s used to stamp the result; real timing is a later stage.
   bool simplify{true};               ///< Shortcut + B-spline the raw path.
   bool require_world{false};         ///< Refuse to plan until setWorld() was called.
+  /// Frame the robot is planned in. When set, updateWorldGeometry() rejects an update whose
+  /// frame_id is set to anything else (no transform is available here, so it cannot be converted).
+  /// Empty: the update's frame is trusted to be the planning base frame.
+  std::string base_frame;
 };
 
 /// Free-space planner and collision checker over one compiled-in VAMP robot.
 /// Not thread-safe: use one instance per thread.
-class VampPlanner : public motion_planner::Planner
+class VampPlanner : public motion_planner::Planner, public motion_planner::ScenePort
 {
 public:
   explicit VampPlanner(const Options & options, std::shared_ptr<core_types::Logger> logger = nullptr);
@@ -48,6 +52,12 @@ public:
   void setWorld(const motion_planner::WorldGeometryUpdate & world);
   void clearWorld();
   bool hasWorld() const;
+
+  /// ScenePort: the same operations, so a SceneModel (via scene_adapters) can feed this backend
+  /// like any other. Geometry must already be in the robot base frame; these never fail.
+  bool updateWorldGeometry(
+    const motion_planner::WorldGeometryUpdate & update, std::string & error_message) override;
+  bool clearWorldGeometry(std::string & error_message) override;
 
   std::string name() const override {return "vamp";}
 

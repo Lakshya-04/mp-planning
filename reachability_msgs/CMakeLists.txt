@@ -8,9 +8,11 @@ find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BaseCandidate.msg"
   "msg/LiftBand.msg"
+  "msg/Stand.msg"
   "srv/IsReachable.srv"
   "srv/GetBaseCandidates.srv"
   "srv/PlanLiftBands.srv"
+  "srv/PlanStands.srv"
   DEPENDENCIES geometry_msgs
 )
 

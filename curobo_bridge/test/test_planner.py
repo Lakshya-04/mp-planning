@@ -144,6 +144,19 @@ def test_ik_recovers_the_default_pose_and_respects_obstacles(planner):
 
 
 @needs_gpu
+def test_ik_prefers_the_seed_branch(planner):
+    import numpy as np
+    # target = FK of a configuration near a seed; the solution must stay on the seed's branch
+    seed = [v + d for v, d in zip(planner.default_joint_state, [0.3, -0.2, 0.25, 0.2, -0.3, 0.2, 0.1])]
+    ks = planner._planner.compute_kinematics(planner._state(seed))
+    pos = ks.tool_poses.position.reshape(-1, 3)[0].tolist()
+    quat = ks.tool_poses.quaternion.reshape(-1, 4)[0].tolist()
+    r = planner.solve_ik(pos, quat, seed=seed)
+    assert r.success, r.message
+    assert float(np.linalg.norm(np.array(r.joints) - np.array(seed))) < 1.5
+
+
+@needs_gpu
 def test_ik_rejects_a_wrong_sized_seed(planner):
     r = planner.solve_ik((0.4, 0.0, 0.4), seed=[0.0, 0.0])
     assert not r.success and r.failure_reason_code == 'invalid_request'
@@ -183,3 +196,4 @@ def test_motion_check_samples_between_waypoints(planner):
 def test_esdf_needs_a_configured_grid(planner):
     with pytest.raises(ValueError):
         planner.set_world(esdf=np.zeros((4, 4, 4), dtype=np.float32))
+

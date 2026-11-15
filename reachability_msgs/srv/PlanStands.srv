@@ -1,0 +1,28 @@
+# Base stands that together cover a wall's targets, in visiting order. Greedy cover; ties go to the
+# stand the base reaches soonest. The base (footprint, drive type) comes from the node's `base_profile`
+# parameter; without it the footprint is ignored and there is no travel time.
+geometry_msgs/Pose[] targets_world
+# Wall plane: a point on it and the unit normal pointing into the free (robot) side.
+geometry_msgs/Point wall_point
+geometry_msgs/Vector3 wall_normal
+# 0 selects the default (0.3 m, 1.6 m, 0.1 m, 0.5 m).
+float64 min_clearance
+float64 max_standoff
+float64 grid_step
+float64 lateral_margin
+float64 lift_min
+float64 lift_max
+float64 lift_step
+float64 arm_mount_offset_z
+# Where the base starts (only used with a base profile).
+bool has_start
+float64 start_x
+float64 start_y
+float64 start_yaw
+---
+bool success                    # every target reached by some stand
+reachability_msgs/Stand[] stands
+uint32[] unreachable            # targets no stand can reach
+uint32[] not_planned            # targets left when the stand cap stopped planning; they may be reachable
+float64 total_travel_s
+string message

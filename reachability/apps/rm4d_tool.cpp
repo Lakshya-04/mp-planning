@@ -5,6 +5,9 @@
 //   rm4d_tool info map.rm4d
 //   rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz] [--approach +x]
 //                            [--lift-max H] [--lift-step dh] [--mount-z dz] [--base-x bx] [--base-y by]
+//   rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W] [--z-step dz] [--y-step dy]
+//                              [--lift-max H] [--mount-z dz] [--min-clearance c] [--grid-step g] [--base-profile profile.yaml]
+//                              [--multi 1 --start-x X --start-y Y]   several stands with travel time
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,9 +15,12 @@
 #include <string>
 
 #include "reachability/core/arm_model.hpp"
+#include "reachability/core/base_model.hpp"
 #include "reachability/core/builder.hpp"
 #include "reachability/core/io.hpp"
 #include "reachability/core/lift_bands.hpp"
+#include "reachability/core/station.hpp"
+#include "reachability/core/stands.hpp"
 
 using namespace reachability;
 
@@ -44,7 +50,9 @@ int usage()
   std::fprintf(stderr,
     "usage:\n  rm4d_tool build chain.yaml out.rm4d [--samples N --threads T --resolution m --extent m --zmin m --zmax m --seed S]\n"
     "  rm4d_tool info map.rm4d\n"
-    "  rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz --lift-max H --lift-step dh --mount-z dz --base-x bx --base-y by]\n");
+    "  rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz --lift-max H --lift-step dh --mount-z dz --base-x bx --base-y by]\n"
+    "  rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W --z-step dz --y-step dy --lift-max H --mount-z dz --min-clearance c --grid-step g --base-profile profile.yaml\n"
+    "    [--multi 1 --start-x X --start-y Y]]\n");
   return 2;
 }
 }  // namespace
@@ -105,6 +113,61 @@ int main(int argc, char ** argv)
         std::printf("  %zu target(s) unreachable from this station\n", plan.unreachable.size());
       }
       return plan.unreachable.empty() ? 0 : 1;
+    }
+    if (cmd == "station") {
+      const Map4D map = loadMap(argv[2]);
+      const auto o = options(argc, argv, 3);
+      const double wall_x = num(o, "wall-x", 3.0), z0 = num(o, "z-min", 0.1), z1 = num(o, "z-max", 2.5);
+      const double dz = num(o, "z-step", 0.2), dy = num(o, "y-step", 0.2), half = num(o, "width", 2.0) / 2.0;
+      StationRequest r;
+      for (double y = -half; y <= half + 1e-9; y += dy) {
+        for (double z = z0; z <= z1 + 1e-9; z += dz) {
+          Pose T = Pose::Identity();
+          T.translation() = Vec3(wall_x, y, z);
+          T.linear() = Eigen::AngleAxisd(M_PI / 2, Vec3::UnitY()).toRotationMatrix();
+          r.targets_world.push_back(T);
+        }
+      }
+      r.wall_point = Vec3(wall_x, 0.0, 0.0);
+      r.wall_normal = Vec3(-1.0, 0.0, 0.0);
+      r.lift_max = num(o, "lift-max", 1.5);
+      r.arm_mount_offset_z = num(o, "mount-z", 0.2);
+      r.min_clearance = num(o, "min-clearance", 0.3);
+      r.grid_step = num(o, "grid-step", 0.1);
+      const auto prof = o.find("base-profile");
+      if (prof != o.end()) {
+        r.base = loadBaseProfile(prof->second);
+        if (!o.count("mount-z")) {
+          if (const auto z = armBaseHeightAtLiftZero(*r.base)) {
+            r.arm_mount_offset_z = *z;
+            std::printf("arm base %.3f m above the ground at lift zero (from the profile; --mount-z overrides)\n", *z);
+          }
+        }
+        std::printf("base %s (%s%s)\n", r.base->name.c_str(), r.base->can_strafe ? "strafes" : "no strafe",
+          r.base->drive == DriveType::kDiff || r.base->drive == DriveType::kSkid ? ", diff/skid" : "");
+      }
+      if (num(o, "multi", 0) != 0) {
+        const Stand start{Eigen::Vector2d(num(o, "start-x", 0.0), num(o, "start-y", -half)), 0.0};
+        const StandPlan sp = planStands(map, r, start);
+        std::printf("%zu stand(s) for %zu targets, %zu unreachable, %zu not planned (stand cap), %.1f s driving\n",
+          sp.stands.size(), r.targets_world.size(), sp.unreachable.size(), sp.not_planned.size(), sp.total_travel_s);
+        for (const auto & a : sp.stands) {
+          std::printf("  arm base (%.2f, %.2f) yaw %.0f deg: %zu targets, %zu band(s), +%.1f s\n", a.station.x,
+            a.station.y, a.station.yaw * 180.0 / M_PI, a.targets.size(), a.station.plan.bands.size(), a.travel_s);
+        }
+        return sp.unreachable.empty() && sp.not_planned.empty() ? 0 : 1;
+      }
+      const Station s = chooseStation(map, r);
+      if (!s.found) {
+        std::printf("no station reaches any of the %zu targets\n", r.targets_world.size());
+        return 1;
+      }
+      std::printf("station: arm base (%.2f, %.2f), %.2f m from the wall, %zu band(s), %zu unreachable of %zu targets\n",
+        s.x, s.y, s.standoff, s.plan.bands.size(), s.plan.unreachable.size(), r.targets_world.size());
+      if (r.base) {
+        std::printf("  base yaw %.0f deg, footprint clearance %.2f m\n", s.yaw * 180.0 / M_PI, s.footprint_clearance);
+      }
+      return s.complete() ? 0 : 1;   // like `bands`: a partial station is a failure for scripts
     }
   } catch (const std::exception & e) {
     std::fprintf(stderr, "error: %s\n", e.what());

@@ -54,6 +54,17 @@ class FakePlanner:
         self.motion_args = (len(waypoints), max_step)
         return waypoints[-1][1] < 1.0
 
+    class esdf:   # the configured grid, as the node reads it
+        voxel_size = 0.1
+
+        @staticmethod
+        def shape():
+            return (2, 2, 2)
+
+    def set_esdf(self, field, center=None):
+        self.esdf_args = (field.copy(), tuple(center))
+        return 1
+
     def set_world(self, boxes=(), points=None, point_voxel=0.05):
         if len(boxes) > self.max_boxes:
             raise ValueError('too many boxes')
@@ -255,3 +266,21 @@ def test_check_motion_reports_per_state_and_sampled_motion(harness):
     assert r.success and list(r.state_valid) == [True, False] and not r.collision_free
     r = call(msgs.CheckMotion, 'check_motion', msgs.CheckMotion.Request(states=_states([0.0])))
     assert not r.success and 'wrong joint count' in r.message
+
+
+def test_set_esdf_reshapes_x_major_and_checks_the_grid(harness):
+    fake, call = harness
+    req = msgs.SetEsdf.Request(nx=2, ny=2, nz=2, voxel_size=0.1, center=[1.0, 2.0, 3.0],
+                               distance=[float(i) for i in range(8)])
+    r = call(msgs.SetEsdf, 'set_esdf', req)
+    assert r.success, r.message
+    field, center = fake.esdf_args
+    assert center == (1.0, 2.0, 3.0)
+    assert field.shape == (2, 2, 2) and field[1, 0, 1] == 5.0 and field[0, 1, 0] == 2.0   # ix slowest
+
+    bad = msgs.SetEsdf.Request(nx=2, ny=2, nz=4, voxel_size=0.1, center=[0.0] * 3, distance=[0.0] * 16)
+    assert not call(msgs.SetEsdf, 'set_esdf', bad).success                    # wrong shape
+    bad = msgs.SetEsdf.Request(nx=2, ny=2, nz=2, voxel_size=0.1, center=[0.0] * 3, distance=[0.0] * 7)
+    assert 'expected 8' in call(msgs.SetEsdf, 'set_esdf', bad).message        # wrong length
+    bad = msgs.SetEsdf.Request(nx=2, ny=2, nz=2, voxel_size=0.2, center=[0.0] * 3, distance=[0.0] * 8)
+    assert not call(msgs.SetEsdf, 'set_esdf', bad).success                    # wrong voxel size

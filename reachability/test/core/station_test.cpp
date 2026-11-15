@@ -67,6 +67,17 @@ TEST(Station, NothingReachableMeansNotFound)
   EXPECT_FALSE(chooseStation(sharedMap(), r).found);
 }
 
+TEST(Station, CompleteMeansEveryTargetIsReached)
+{
+  const auto all = chooseStation(sharedMap(), baseRequest(wallTargets({0.0}, {0.8, 1.2})));
+  EXPECT_TRUE(all.complete());
+  // one reachable and one far above any reach: found, but not complete
+  const auto partial = chooseStation(sharedMap(), baseRequest(wallTargets({0.0}, {1.0, 5.0})));
+  ASSERT_TRUE(partial.found);
+  EXPECT_FALSE(partial.complete());
+  EXPECT_FALSE(Station{}.complete());
+}
+
 TEST(Station, WideWallPrefersAStationInTheMiddle)
 {
   const auto s = chooseStation(sharedMap(), baseRequest(wallTargets({-0.3, 0.0, 0.3}, {1.0})));
@@ -85,4 +96,31 @@ TEST(Station, RejectsDegenerateRequests)
   r = baseRequest(wallTargets({0.0}, {1.0}));
   r.wall_normal = Vec3::UnitZ();  // horizontal plane
   EXPECT_FALSE(chooseStation(sharedMap(), r).found);
+}
+
+TEST(Station, FootprintMustFitBetweenTheWallAndTheArm)
+{
+  auto r = baseRequest(wallTargets({0.0}, {0.8, 1.2}));
+  const auto without = chooseStation(sharedMap(), r);
+  ASSERT_TRUE(without.found);
+
+  BaseModel base;
+  base.footprint = {{-0.4, -0.25}, {0.4, -0.25}, {0.4, 0.25}, {-0.4, 0.25}};   // 0.8 x 0.5 m
+  r.base = base;
+  r.min_clearance = 0.3;
+  const auto with = chooseStation(sharedMap(), r);
+  ASSERT_TRUE(with.found);
+  EXPECT_GE(with.footprint_clearance, 0.3 - 1e-9);
+  // the arm base sits at least the footprint's half depth (0.25, short side to the wall) beyond the clearance
+  EXPECT_GE(with.standoff, 0.3 + 0.25 - 1e-9);
+  EXPECT_GE(with.standoff, without.standoff - 1e-9);
+  EXPECT_NEAR(std::abs(std::sin(with.yaw)), 1.0, 0.3);   // short side toward the wall
+}
+
+TEST(Station, WithoutABaseModelNothingChanges)
+{
+  const auto r = baseRequest(wallTargets({0.0}, {0.8}));
+  const auto s = chooseStation(sharedMap(), r);
+  EXPECT_EQ(s.yaw, 0.0);
+  EXPECT_EQ(s.footprint_clearance, 0.0);
 }

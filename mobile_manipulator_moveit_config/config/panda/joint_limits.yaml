@@ -1,0 +1,19 @@
+# MoveIt limits for the 7-DOF Panda-like arm; velocities follow the published Panda limits
+# (the shared joint_limits.yaml would raise joints 5-7 above them).
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+joint_limits:
+  lift_joint:
+    has_velocity_limits: true
+    max_velocity: 0.2
+    has_acceleration_limits: true
+    max_acceleration: 0.5
+    has_jerk_limits: false
+  arm_joint1: &slow {has_velocity_limits: true, max_velocity: 2.175, has_acceleration_limits: true, max_acceleration: 3.0}
+  arm_joint2: *slow
+  arm_joint3: *slow
+  arm_joint4: *slow
+  arm_joint5: &wrist {has_velocity_limits: true, max_velocity: 2.61, has_acceleration_limits: true, max_acceleration: 5.0}
+  arm_joint6: *wrist
+  arm_joint7: *wrist

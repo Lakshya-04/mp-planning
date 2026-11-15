@@ -13,6 +13,7 @@
 #include "core_types/logger.hpp"
 #include "motion_planner/core/planners/planner.hpp"
 #include "motion_planner/core/scene_port.hpp"
+#include "scene_model/core/types.hpp"
 
 namespace curobo_planner
 {
@@ -22,9 +23,13 @@ struct Options
   std::string node_name{"/curobo_planner"};  ///< Name of the cuRobo planner node (its services' prefix).
   double wait_for_service_sec{5.0};
   double timeout_sec{30.0};                  ///< Per-call deadline; the first plan can be slow.
+  /// The robot's base frame. When set, setWorld() / updateWorldGeometry() reject an update whose
+  /// frame_id is set to anything else (the node cannot transform it). Empty: the update's frame is
+  /// trusted to be the base frame.
+  std::string base_frame;
 };
 
-class CuroboClientPlanner : public motion_planner::Planner
+class CuroboClientPlanner : public motion_planner::Planner, public motion_planner::ScenePort
 {
 public:
   CuroboClientPlanner(
@@ -34,9 +39,21 @@ public:
 
   std::string name() const override {return "curobo";}
 
-  /// Replaces the planner's world (boxes + points, `points_origin` applied). False on failure.
+  /// Replaces the planner's boxes and points (`points_origin` applied). The distance field set by
+  /// setEsdf() is kept unless `world` carries points, which replace it. False on failure.
   bool setWorld(const motion_planner::WorldGeometryUpdate & world, std::string * message = nullptr);
   bool clearWorld(std::string * message = nullptr);
+
+  /// Replaces only the distance field (the world's boxes stay). The node must run with an ESDF grid
+  /// of the same shape and voxel size; its centre may differ per call. Our x-fastest layout and
+  /// voxel-(0,0,0)-centre origin are converted to cuRobo's x-major layout and grid centre.
+  bool setEsdf(const scene_model::EsdfGrid & grid, std::string * message = nullptr);
+
+  /// ScenePort: the same two operations, so a SceneModel (via scene_adapters) can feed cuRobo like
+  /// any other backend.
+  bool updateWorldGeometry(
+    const motion_planner::WorldGeometryUpdate & update, std::string & error_message) override;
+  bool clearWorldGeometry(std::string & error_message) override;
 
   /// Joint-space move start_joint_state -> target_joint_state. With no target joint state and one
   /// target pose, plans to that pose (position + quaternion, robot base frame).

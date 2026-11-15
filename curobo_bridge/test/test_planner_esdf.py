@@ -100,3 +100,20 @@ def test_ready_made_esdf_and_shape_checks(esdf_planner):
     p.clear_world()
     with pytest.raises(ValueError):
         p.set_world(esdf=np.zeros((4, 4, 4), dtype=np.float32))
+
+
+@needs_gpu
+def test_set_esdf_keeps_the_boxes_and_clear_drops_everything(esdf_planner):
+    from curobo_bridge import Box
+    p = esdf_planner
+    goal = list(np.array(p.default_joint_state) + 0.15)
+    far_box = Box('far', (1.5, 1.5, 1.5), (0.1, 0.1, 0.1))
+    assert p.set_world([far_box]) == 1
+    field = points_to_esdf(_blob(_tool_position(p)), p.esdf)
+    assert p.set_esdf(field) == 2                    # the box stays, the field is added
+    assert [b.id for b in p._boxes] == ['far']
+    assert not p.plan_joint(p.default_joint_state, goal).success
+    p.set_esdf(np.full(p.esdf.shape(), 1.0, dtype=np.float32))   # an all-free field replaces it
+    assert p.plan_joint(p.default_joint_state, goal).success
+    p.clear_world()
+    assert p._boxes == []

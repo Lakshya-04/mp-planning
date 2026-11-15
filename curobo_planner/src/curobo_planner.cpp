@@ -9,6 +9,7 @@
 #include <curobo_bridge_msgs/srv/check_motion.hpp>
 #include <curobo_bridge_msgs/srv/plan_joint.hpp>
 #include <curobo_bridge_msgs/srv/plan_pose.hpp>
+#include <curobo_bridge_msgs/srv/set_esdf.hpp>
 #include <curobo_bridge_msgs/srv/set_world.hpp>
 #include <curobo_bridge_msgs/srv/solve_ik.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -21,6 +22,7 @@ namespace mp = motion_planner;
 using curobo_bridge_msgs::srv::CheckMotion;
 using curobo_bridge_msgs::srv::PlanJoint;
 using curobo_bridge_msgs::srv::PlanPose;
+using curobo_bridge_msgs::srv::SetEsdf;
 using curobo_bridge_msgs::srv::SetWorld;
 using curobo_bridge_msgs::srv::SolveIk;
 
@@ -82,6 +84,7 @@ struct CuroboClientPlanner::Impl
   rclcpp::Client<PlanPose>::SharedPtr plan_pose;
   rclcpp::Client<SetWorld>::SharedPtr set_world;
   rclcpp::Client<SolveIk>::SharedPtr solve_ik;
+  rclcpp::Client<SetEsdf>::SharedPtr set_esdf;
   rclcpp::Client<CheckMotion>::SharedPtr check_motion;
 
   template<typename Srv>
@@ -114,6 +117,7 @@ CuroboClientPlanner::CuroboClientPlanner(
   impl_->plan_pose = impl_->node->create_client<PlanPose>(options.node_name + "/plan_pose");
   impl_->set_world = impl_->node->create_client<SetWorld>(options.node_name + "/set_world");
   impl_->solve_ik = impl_->node->create_client<SolveIk>(options.node_name + "/solve_ik");
+  impl_->set_esdf = impl_->node->create_client<SetEsdf>(options.node_name + "/set_esdf");
   impl_->check_motion = impl_->node->create_client<CheckMotion>(options.node_name + "/check_motion");
 }
 
@@ -152,6 +156,13 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
 
 bool CuroboClientPlanner::setWorld(const mp::WorldGeometryUpdate & world, std::string * message)
 {
+  if (!impl_->options.base_frame.empty() && !world.frame_id.empty() && world.frame_id != impl_->options.base_frame) {
+    if (message) {
+      *message = "world frame '" + world.frame_id + "' differs from the robot base frame '" +
+        impl_->options.base_frame + "' and cuRobo cannot transform it";
+    }
+    return false;
+  }
   auto req = std::make_shared<SetWorld::Request>();
   for (const auto & b : world.boxes) {
     curobo_bridge_msgs::msg::Box box;
@@ -201,9 +212,59 @@ bool CuroboClientPlanner::setWorld(const mp::WorldGeometryUpdate & world, std::s
   return res->success;
 }
 
+bool CuroboClientPlanner::setEsdf(const scene_model::EsdfGrid & grid, std::string * message)
+{
+  if (grid.nx <= 0 || grid.ny <= 0 || grid.nz <= 0) {
+    if (message) {*message = "ESDF grid dimensions must be positive";}
+    return false;
+  }
+  const size_t n = static_cast<size_t>(grid.nx) * static_cast<size_t>(grid.ny) * static_cast<size_t>(grid.nz);
+  if (grid.distance.size() != n) {
+    if (message) {*message = "ESDF grid has inconsistent dimensions";}
+    return false;
+  }
+  auto req = std::make_shared<SetEsdf::Request>();
+  req->nx = static_cast<uint32_t>(grid.nx);
+  req->ny = static_cast<uint32_t>(grid.ny);
+  req->nz = static_cast<uint32_t>(grid.nz);
+  req->voxel_size = grid.voxel_size;
+  // our origin is the centre of voxel (0,0,0); the grid box is centred (n - 1) / 2 voxels further on
+  const Eigen::Vector3d dims(grid.nx, grid.ny, grid.nz);
+  const Eigen::Vector3d centre = grid.origin + grid.voxel_size * (dims.array() - 1.0).matrix() / 2.0;
+  req->center = {centre.x(), centre.y(), centre.z()};
+  req->distance.resize(n);
+  for (int i = 0; i < grid.nx; ++i) {          // x-fastest in, x-slowest out
+    for (int j = 0; j < grid.ny; ++j) {
+      for (int k = 0; k < grid.nz; ++k) {
+        req->distance[(static_cast<size_t>(i) * grid.ny + j) * grid.nz + k] = grid.distance[grid.index(i, j, k)];
+      }
+    }
+  }
+  std::string error;
+  auto res = impl_->call<SetEsdf>(impl_->set_esdf, req, error);
+  if (!res) {
+    if (message) {*message = error;}
+    return false;
+  }
+  if (!res->success && message) {*message = res->message;}
+  return res->success;
+}
+
 bool CuroboClientPlanner::clearWorld(std::string * message)
 {
   return setWorld(mp::WorldGeometryUpdate{}, message);
+}
+
+bool CuroboClientPlanner::updateWorldGeometry(const mp::WorldGeometryUpdate & update, std::string & error_message)
+{
+  error_message.clear();
+  return setWorld(update, &error_message);
+}
+
+bool CuroboClientPlanner::clearWorldGeometry(std::string & error_message)
+{
+  error_message.clear();
+  return clearWorld(&error_message);
 }
 
 mp::IkResult CuroboClientPlanner::ik(const mp::IkRequest & request)

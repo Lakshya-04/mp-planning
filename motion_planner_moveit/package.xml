@@ -32,6 +32,7 @@
   <depend>octomap_msgs</depend>
   <depend>libpcl-all-dev</depend>
   <depend>nlohmann-json-dev</depend>
+  <depend>mobile_manipulator_profile</depend>
   <exec_depend>mobile_manipulator_moveit_config</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

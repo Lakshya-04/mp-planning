@@ -11,15 +11,18 @@
 #include <curobo_bridge_msgs/srv/check_motion.hpp>
 #include <curobo_bridge_msgs/srv/plan_joint.hpp>
 #include <curobo_bridge_msgs/srv/plan_pose.hpp>
+#include <curobo_bridge_msgs/srv/set_esdf.hpp>
 #include <curobo_bridge_msgs/srv/set_world.hpp>
 #include <curobo_bridge_msgs/srv/solve_ik.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include "curobo_planner/curobo_planner.hpp"
+#include "scene_model/core/voxel.hpp"
 
 using curobo_bridge_msgs::srv::CheckMotion;
 using curobo_bridge_msgs::srv::PlanJoint;
 using curobo_bridge_msgs::srv::PlanPose;
+using curobo_bridge_msgs::srv::SetEsdf;
 using curobo_bridge_msgs::srv::SetWorld;
 using curobo_bridge_msgs::srv::SolveIk;
 namespace mp = motion_planner;
@@ -64,6 +67,12 @@ public:
         r->trajectory.joint_names = {"j1", "j2"};
         r->trajectory.points.resize(1);
       });
+    esdf_srv = node->create_service<SetEsdf>(
+      "~/set_esdf", [this](const SetEsdf::Request::SharedPtr q, SetEsdf::Response::SharedPtr r) {
+        last_esdf = *q;
+        r->success = q->nx != 99;
+        if (!r->success) {r->message = "shape mismatch";}
+      });
     ik_srv = node->create_service<SolveIk>(
       "~/solve_ik", [this](const SolveIk::Request::SharedPtr q, SolveIk::Response::SharedPtr r) {
         last_ik = *q;
@@ -98,6 +107,8 @@ public:
   }
 
   std::shared_ptr<rclcpp::Node> node;
+  rclcpp::Service<SetEsdf>::SharedPtr esdf_srv;
+  SetEsdf::Request last_esdf;
   rclcpp::Service<SolveIk>::SharedPtr ik_srv;
   rclcpp::Service<CheckMotion>::SharedPtr check_srv;
   SolveIk::Request last_ik;
@@ -286,6 +297,86 @@ TEST(CuroboClient, WorldCarriesBoxesAndTransformedPoints)
   EXPECT_EQ(message, "too many boxes");
 }
 
+TEST(CuroboClient, RejectsAWorldInAnotherFrame)
+{
+  Fixture f;
+  curobo_planner::Options o;
+  o.base_frame = "base";
+  o.timeout_sec = 5.0;
+  curobo_planner::CuroboClientPlanner planner(f.client_node, o);
+  mp::WorldGeometryUpdate w;
+  w.frame_id = "map";
+  mp::WorldGeometryBox b;
+  b.id = "crate";
+  b.orientation_w = 1.0;
+  w.boxes.push_back(b);
+  std::string error;
+  EXPECT_FALSE(planner.updateWorldGeometry(w, error));
+  EXPECT_NE(error.find("map"), std::string::npos);
+  EXPECT_TRUE(f.server->last_world.boxes.empty());   // nothing reached the node
+  w.frame_id = "base";
+  EXPECT_TRUE(planner.updateWorldGeometry(w, error)) << error;
+  EXPECT_EQ(f.server->last_world.boxes.size(), 1U);
+}
+
+TEST(CuroboClient, IsAScenePortToo)
+{
+  Fixture f;
+  mp::ScenePort & port = *f.planner;
+  mp::WorldGeometryUpdate w;
+  mp::WorldGeometryBox b;
+  b.id = "crate";
+  b.orientation_w = 1.0;
+  w.boxes.push_back(b);
+  std::string error;
+  ASSERT_TRUE(port.updateWorldGeometry(w, error)) << error;
+  ASSERT_EQ(f.server->last_world.boxes.size(), 1U);
+  EXPECT_EQ(f.server->last_world.boxes[0].id, "crate");
+  ASSERT_TRUE(port.clearWorldGeometry(error)) << error;
+  EXPECT_TRUE(f.server->last_world.boxes.empty());
+  w.boxes.assign(6, b);                       // the stub refuses 5 or more
+  EXPECT_FALSE(port.updateWorldGeometry(w, error));
+  EXPECT_EQ(error, "too many boxes");
+}
+
+TEST(CuroboClient, EsdfIsReorderedToXMajorWithTheGridCentre)
+{
+  Fixture f;
+  scene_model::EsdfGrid g;
+  g.nx = 2;
+  g.ny = 3;
+  g.nz = 4;
+  g.voxel_size = 0.1;
+  g.origin = scene_model::Vec3(1.0, 2.0, 3.0);   // centre of voxel (0,0,0)
+  g.distance.resize(24);
+  for (int k = 0; k < 4; ++k) {
+    for (int j = 0; j < 3; ++j) {
+      for (int i = 0; i < 2; ++i) {g.distance[g.index(i, j, k)] = 100.0F * i + 10.0F * j + k;}
+    }
+  }
+  std::string message;
+  ASSERT_TRUE(f.planner->setEsdf(g, &message)) << message;
+  const auto & q = f.server->last_esdf;
+  EXPECT_EQ(q.nx, 2U);
+  EXPECT_EQ(q.nz, 4U);
+  EXPECT_NEAR(q.center[0], 1.05, 1e-12);        // origin + (n - 1) / 2 voxels
+  EXPECT_NEAR(q.center[1], 2.10, 1e-12);
+  EXPECT_NEAR(q.center[2], 3.15, 1e-12);
+  ASSERT_EQ(q.distance.size(), 24U);
+  // x-major: index = (ix * ny + iy) * nz + iz
+  EXPECT_FLOAT_EQ(q.distance[(1 * 3 + 2) * 4 + 3], 100.0F + 20.0F + 3.0F);
+  EXPECT_FLOAT_EQ(q.distance[(0 * 3 + 1) * 4 + 2], 12.0F);
+
+  g.distance.pop_back();
+  EXPECT_FALSE(f.planner->setEsdf(g, &message));
+  EXPECT_NE(message.find("inconsistent"), std::string::npos);
+  g.distance.push_back(0.0F);
+  g.nx = 99;                                      // the stub node refuses this shape
+  g.distance.resize(static_cast<size_t>(99) * 3 * 4);
+  EXPECT_FALSE(f.planner->setEsdf(g, &message));
+  EXPECT_EQ(message, "shape mismatch");
+}
+
 TEST(CuroboClient, MissingServerIsReportedNotHung)
 {
   auto node = std::make_shared<rclcpp::Node>("lonely_client");
@@ -397,6 +488,69 @@ TEST(CuroboClientIntegration, IkAndCollisionOnTheRealNode)
   EXPECT_FALSE(bad_res.collision_free);
   ASSERT_TRUE(path_res.success) << path_res.message;
   EXPECT_TRUE(path_res.collision_free);
+}
+
+// Our EsdfGrid through the real node (started with esdf_dims 2x2x2, voxel 0.05, centre 0.3 0 0.5) to
+// cuRobo on the GPU: an obstacle at the tool blocks the move, a free field does not.
+TEST(CuroboClientIntegration, EsdfFromOurGridBlocksAndFrees)
+{
+  const char * start_env = std::getenv("CUROBO_START");
+  const char * tool_env = std::getenv("CUROBO_TOOL");
+  if (!start_env || !tool_env || !std::getenv("CUROBO_ESDF")) {
+    GTEST_SKIP() << "CUROBO_START / CUROBO_TOOL / CUROBO_ESDF not set";
+  }
+  std::vector<double> start, tool;
+  {std::istringstream in(start_env); for (double v; in >> v;) {start.push_back(v);}}
+  {std::istringstream in(tool_env); for (double v; in >> v;) {tool.push_back(v);}}
+
+  const double v = 0.05;
+  const int n = 40;
+  const scene_model::Vec3 centre(0.3, 0.0, 0.5);
+  scene_model::VoxelGrid vox;
+  vox.voxel_size = v;
+  vox.nx = vox.ny = vox.nz = n;
+  vox.origin = centre - scene_model::Vec3::Constant(0.5 * n * v) + scene_model::Vec3::Constant(0.5 * v);
+  vox.occupied.assign(static_cast<size_t>(n) * n * n, scene_model::kVoxelFree);
+  const scene_model::Vec3 blob(tool[0], tool[1], tool[2]);
+  for (int k = 0; k < n; ++k) {
+    for (int j = 0; j < n; ++j) {
+      for (int i = 0; i < n; ++i) {
+        if ((vox.origin + v * scene_model::Vec3(i, j, k) - blob).norm() < 0.08) {
+          vox.occupied[vox.index(i, j, k)] = scene_model::kVoxelOccupied;
+        }
+      }
+    }
+  }
+  const scene_model::EsdfGrid esdf = scene_model::computeEsdf(vox);
+  scene_model::EsdfGrid free_field = esdf;
+  free_field.distance.assign(esdf.distance.size(), 1.0F);
+
+  auto node = std::make_shared<rclcpp::Node>("integration_client_esdf");
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node);
+  std::thread spinner([&exec] {exec.spin();});
+  curobo_planner::Options o;
+  o.wait_for_service_sec = 120.0;
+  o.timeout_sec = 120.0;
+  curobo_planner::CuroboClientPlanner planner(node, o);
+
+  mp::PlanningRequest r;
+  r.start_joint_state = start;
+  r.target_joint_state = start;
+  for (auto & x : r.target_joint_state) {x += 0.15;}
+  std::string m1, m2;
+  const bool set_blocking = planner.setEsdf(esdf, &m1);
+  const auto blocked = planner.plan(r);
+  const bool set_free = planner.setEsdf(free_field, &m2);
+  const auto freed = planner.plan(r);
+  planner.clearWorld();
+  exec.cancel();
+  spinner.join();
+
+  ASSERT_TRUE(set_blocking) << m1;
+  EXPECT_FALSE(blocked.success) << "an obstacle at the tool must block the plan";
+  ASSERT_TRUE(set_free) << m2;
+  EXPECT_TRUE(freed.success) << freed.failure_reason_code << ": " << freed.message;
 }
 
 int main(int argc, char ** argv)

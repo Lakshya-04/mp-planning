@@ -4,9 +4,9 @@
   <name>mobile_manipulator_moveit_config</name>
   <version>0.1.0</version>
   <description>
-    MoveIt 2 configuration for mobile_manipulator_description: planning groups arm (6-DOF) and
-    lift_arm (7-DOF), KDL kinematics, OMPL, joint limits with explicit velocity / acceleration
-    scaling, and a mock-hardware demo (ros2_control) for the UR and generic arms.
+    MoveIt 2 configuration for mobile_manipulator_description: planning groups arm (N-DOF) and
+    lift_arm (1 + N DOF), named by the robot profile, KDL kinematics, OMPL, joint limits with explicit velocity / acceleration
+    scaling, and a mock-hardware demo (ros2_control) for the UR, generic 6-DOF and Panda-like 7-DOF arms.
   </description>
   <maintainer email="100lakshyaagarwal@gmail.com">Lakshya Agarwal</maintainer>
   <license>Apache-2.0</license>
@@ -14,9 +14,14 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
-  <exec_depend>mobile_manipulator_description</exec_depend>
+  <depend>mobile_manipulator_description</depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>moveit_ros_planning</test_depend>
+  <test_depend>rclcpp</test_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>
+  <exec_depend>pick_ik</exec_depend>
+  <exec_depend>trac_ik_kinematics_plugin</exec_depend>
   <exec_depend>moveit_planners_ompl</exec_depend>
   <exec_depend>moveit_simple_controller_manager</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>

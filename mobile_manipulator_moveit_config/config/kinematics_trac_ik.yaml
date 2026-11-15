@@ -1,0 +1,19 @@
+# TRAC-IK (stock, from apt): runs a KDL Newton solver and an SQP solver side by side.
+# solve_type Distance keeps searching for the whole allotted timeout on EVERY call and returns the
+# solution closest to the seed in joint space (it prefers the branch the robot is on). Speed returns
+# the first solution found. A Cartesian pass calls IK once per waypoint, so the full timeout adds up.
+# Select with `ik:=trac_ik` (demo.launch.py) or build_moveit_config(..., ik='trac_ik').
+arm:
+  kinematics_solver: trac_ik_kinematics_plugin/TRAC_IKKinematicsPlugin
+  # Distance stays here: the 6-DOF arm has few branches, it measured 0.007 rad mean excess with no
+  # jump, and it costs at most 0.05 s per call (the whole timeout, since Distance never stops early).
+  kinematics_solver_timeout: 0.05
+  solve_type: Distance
+lift_arm:
+  kinematics_solver: trac_ik_kinematics_plugin/TRAC_IKKinematicsPlugin
+  # Speed, not Distance: Distance spends the full 0.1 s on every call (about 10 s for a 1 m pass of
+  # 100 waypoints). The branch preference of the redundant 7-DOF chain comes from SeedPreferringIk
+  # (ik_seeds:=N), which also weighs the lift in metres against the joints in radians. Solve time with
+  # Speed was not measured here; the quality table in docs/moveit_config.md is for Distance.
+  kinematics_solver_timeout: 0.1
+  solve_type: Speed

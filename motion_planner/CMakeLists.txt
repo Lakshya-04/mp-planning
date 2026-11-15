@@ -23,6 +23,7 @@ find_package(core_types REQUIRED)
 add_library(motion_planner_core
   src/core/motion_planner.cpp
   src/core/planners/reachability_tilt.cpp
+  src/core/planners/seed_preferring_ik.cpp
 )
 target_include_directories(motion_planner_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -58,6 +59,8 @@ if(BUILD_TESTING)
     set(ament_cmake_uncrustify_FOUND TRUE)
     set(ament_cmake_flake8_FOUND TRUE)
     set(ament_cmake_pep257_FOUND TRUE)
+    set(ament_cmake_xmllint_FOUND TRUE)
+    set(ament_cmake_lint_cmake_FOUND TRUE)
     ament_lint_auto_find_test_dependencies()
   endif()
 
@@ -66,6 +69,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(reachability_tilt_test test/core/reachability_tilt_test.cpp)
   target_link_libraries(reachability_tilt_test motion_planner_core)
+
+  ament_add_gtest(seed_preferring_ik_test test/core/seed_preferring_ik_test.cpp)
+  target_link_libraries(seed_preferring_ik_test motion_planner_core)
 
   ament_add_gtest(wall_penetration_check_test test/core/wall_penetration_check_test.cpp)
   target_link_libraries(wall_penetration_check_test motion_planner_core)

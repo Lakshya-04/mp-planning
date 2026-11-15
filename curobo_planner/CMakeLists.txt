@@ -12,6 +12,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(core_types REQUIRED)
 find_package(motion_planner REQUIRED)
+find_package(scene_model REQUIRED)
 find_package(curobo_bridge_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -21,7 +22,7 @@ add_library(curobo_planner src/curobo_planner.cpp)
 target_include_directories(curobo_planner PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_link_libraries(curobo_planner PUBLIC motion_planner::motion_planner_core core_types::core_types Eigen3::Eigen)
+target_link_libraries(curobo_planner PUBLIC motion_planner::motion_planner_core scene_model::scene_model_core core_types::core_types Eigen3::Eigen)
 ament_target_dependencies(curobo_planner PUBLIC rclcpp curobo_bridge_msgs geometry_msgs sensor_msgs)
 
 install(TARGETS curobo_planner EXPORT export_curobo_planner
@@ -36,5 +37,5 @@ endif()
 
 ament_export_targets(export_curobo_planner HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp core_types motion_planner curobo_bridge_msgs geometry_msgs sensor_msgs Eigen3)
+ament_export_dependencies(rclcpp core_types motion_planner scene_model curobo_bridge_msgs geometry_msgs sensor_msgs Eigen3)
 ament_package()

@@ -6,8 +6,10 @@
 // is to the wall's work area.
 #pragma once
 
+#include <optional>
 #include <vector>
 
+#include "reachability/core/base_model.hpp"
 #include "reachability/core/lift_bands.hpp"
 #include "reachability/core/map4d.hpp"
 
@@ -27,6 +29,13 @@ struct StationRequest
   double lift_max{1.5};
   double lift_step{0.05};
   double arm_mount_offset_z{0.0};
+  /// With a base model the clearance applies to the whole footprint (not the arm base point), the
+  /// station reports the base yaw that gives it, and stands where the footprint would not fit are
+  /// skipped. `max_standoff` and `standoff` still refer to the arm base.
+  std::optional<BaseModel> base;
+  /// Where the base is now. With a base model, ties between equally good stations go to the one
+  /// the base reaches soonest (travelTime), instead of the one nearest the middle of the work area.
+  std::optional<Stand> from;
 };
 
 struct Station
@@ -34,9 +43,14 @@ struct Station
   bool found{false};
   double x{0.0};
   double y{0.0};
-  double standoff{0.0};          ///< Distance from the wall plane.
+  double standoff{0.0};          ///< Distance from the wall plane (arm base).
+  double yaw{0.0};               ///< Base yaw (only set when the request has a base model).
+  double footprint_clearance{0.0};  ///< Footprint to wall distance (only with a base model).
   LiftBandPlan plan;             ///< Lift bands for this station.
   size_t evaluated{0};           ///< Stations tried.
+
+  /// A station was found and it reaches every target.
+  bool complete() const {return found && plan.unreachable.empty();}
 };
 
 /// Best station on the free side of the wall. `found` is false only if nothing reaches any target.

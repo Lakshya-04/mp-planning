@@ -1,0 +1,23 @@
+# Drive the base so the ARM BASE (not base_footprint) ends at the stand pose. Same shape as Nav2's
+# nav2_msgs/NavigateToPose (pose in, distance_remaining feedback, error code in the result), so a
+# Nav2 bridge can replace the node without touching callers.
+#
+# pose.header.frame_id must be the odometry frame ("odom"; the node does not transform between frames).
+# The goal is the arm base position (reachability Stand.x, Stand.y) and base yaw (Stand.yaw).
+geometry_msgs/PoseStamped pose
+---
+uint16 NONE=0
+uint16 UNKNOWN=1
+uint16 INVALID_GOAL=2
+uint16 TIMEOUT=3
+uint16 NO_ODOM=4
+uint16 CANCELED=5
+uint16 error_code
+string error_msg
+# final error of the arm base against the goal
+float64 position_error_m
+float64 yaw_error_rad
+---
+float64 distance_remaining
+float64 yaw_remaining
+geometry_msgs/PoseStamped current_pose   # arm base, odom frame

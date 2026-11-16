@@ -35,7 +35,11 @@ int main(int argc, char ** argv)
   const double octomap_resolution =
     node->declare_parameter<double>("octomap_resolution", 0.05);
 
-  if (point_cloud_path.empty()) {
+  // clear:=true takes the geometry out of the scene again instead of loading a file (the manager's
+  // recovery uses it to free a tool that is jammed in the wall, then loads the wall back).
+  const bool clear = node->declare_parameter<bool>("clear", false);
+
+  if (point_cloud_path.empty() && !clear) {
     RCLCPP_ERROR(
       node->get_logger(),
       "world_model_loader: 'point_cloud_path' parameter is required.");
@@ -61,7 +65,16 @@ int main(int argc, char ** argv)
   int exit_code = 1;
 
   if (move_group_ready && rclcpp::ok()) {
-    try {
+    if (clear) {
+      motion_planner::MoveItSceneAdapter scene_adapter(octomap_resolution);
+      std::string error_message;
+      if (scene_adapter.clearWorldGeometry(error_message)) {
+        RCLCPP_INFO(node->get_logger(), "World geometry cleared from the planning scene.");
+        exit_code = 0;
+      } else {
+        RCLCPP_ERROR(node->get_logger(), "Failed to clear world geometry: %s", error_message.c_str());
+      }
+    } else try {
       const motion_planner::WorldGeometryUpdate update =
         motion_planner::loadPointCloudFile(point_cloud_path, frame_id);
       RCLCPP_INFO(

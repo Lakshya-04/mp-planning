@@ -147,6 +147,11 @@ PlanningResult OmplPlanner::plan(const PlanningRequest & request)
       moveit::core::RobotState start_state(robot_model);
       start_state.setToDefaultValues();
       start_state.setJointGroupPositions(joint_model_group, request.start_joint_state);
+      // The measured state of a joint at its end stop is often a hair outside the range (a lift read -0.09 mm and
+      // later -1.5 mm below 0 after a stow). MoveIt's CheckStartStateBounds rejects any such start state, so
+      // every plan then fails in milliseconds and the arm cannot be moved again. Planning from the state clamped
+      // into the range changes the start by that hair only.
+      start_state.enforceBounds(joint_model_group);
       start_state.update();
       move_group_->setStartState(start_state);
       used_explicit_start_state = true;

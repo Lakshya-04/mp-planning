@@ -1,0 +1,19 @@
+# MoveIt occupancy map monitor fed by a live PointCloud2 (builder `live_octomap=True`,
+# sim_mujoco `live_octomap:=true`; docs/perception_live.md). Plugin: moveit_ros_perception's
+# PointCloudOctomapUpdater (no OpenGL); its ShapeMask removes points inside the robot's own
+# collision shapes (padded), so the arm is not mapped as an obstacle.
+sensors:
+  - depth_cloud
+# The octomap lives in the planning frame (the profile's frames.world_base).
+octomap_frame: base_footprint
+octomap_resolution: 0.03
+depth_cloud:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  point_cloud_topic: /depth_sensor/points
+  max_range: 4.0
+  point_subsample: 1
+  padding_offset: 0.03
+  padding_scale: 1.0
+  max_update_rate: 2.0
+  filtered_cloud_topic: filtered_cloud
+  ns: ""

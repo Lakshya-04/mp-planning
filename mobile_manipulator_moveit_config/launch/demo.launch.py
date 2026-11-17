@@ -34,7 +34,8 @@ def _nodes(context):
     ik = LaunchConfiguration('ik').perform(context)
     config_pkg = get_package_share_directory('mobile_manipulator_moveit_config')
     moveit_config = build_moveit_config(
-        arm, hardware=hardware_for(controller), ik=ik, profile=profile)
+        arm, hardware=hardware_for(controller), ik=ik, profile=profile,
+        live_octomap=LaunchConfiguration('live_octomap').perform(context) == 'true')
     controllers = controllers_file(arm, controller, profile)
 
     controller_spawn_args = ['lift_arm_controller', '--controller-manager', '/controller_manager']
@@ -81,6 +82,8 @@ def generate_launch_description():
                               description='trajectory (joint_trajectory_controller) or jtac'),
         DeclareLaunchArgument('ik', default_value='trac_ik',
                               description='trac_ik (default), kdl or pick_ik'),
+        DeclareLaunchArgument('live_octomap', default_value='false',
+                              description='MoveIt octomap from the live /depth_sensor/points cloud'),
         DeclareLaunchArgument('rviz', default_value='true'),
         OpaqueFunction(function=_nodes),
     ])

@@ -7,7 +7,7 @@
 //                            [--lift-max H] [--lift-step dh] [--mount-z dz] [--base-x bx] [--base-y by]
 //   rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W] [--z-step dz] [--y-step dy]
 //                              [--lift-max H] [--mount-z dz] [--min-clearance c] [--grid-step g] [--base-profile profile.yaml]
-//                              [--multi 1 --start-x X --start-y Y]   several stands with travel time
+//                              [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover]   several stands with travel time
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,7 +52,7 @@ int usage()
     "  rm4d_tool info map.rm4d\n"
     "  rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz --lift-max H --lift-step dh --mount-z dz --base-x bx --base-y by]\n"
     "  rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W --z-step dz --y-step dy --lift-max H --mount-z dz --min-clearance c --grid-step g --base-profile profile.yaml\n"
-    "    [--multi 1 --start-x X --start-y Y]]\n");
+    "    [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover]]\n");
   return 2;
 }
 }  // namespace
@@ -148,7 +148,9 @@ int main(int argc, char ** argv)
       }
       if (num(o, "multi", 0) != 0) {
         const Stand start{Eigen::Vector2d(num(o, "start-x", 0.0), num(o, "start-y", -half)), 0.0};
-        const StandPlan sp = planStands(map, r, start);
+        const auto strat = o.find("strategy");
+        const StandPlan sp = planStands(map, r, start, 32,
+          parseStandStrategy(strat == o.end() ? "greedy" : strat->second));
         std::printf("%zu stand(s) for %zu targets, %zu unreachable, %zu not planned (stand cap), %.1f s driving\n",
           sp.stands.size(), r.targets_world.size(), sp.unreachable.size(), sp.not_planned.size(), sp.total_travel_s);
         for (const auto & a : sp.stands) {

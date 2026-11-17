@@ -23,6 +23,7 @@ add_library(reachability_core
   src/core/station.cpp
   src/core/base_model.cpp
   src/core/stands.cpp
+  src/core/stand_cover.cpp
   src/core/io.cpp
 )
 target_include_directories(reachability_core PUBLIC
@@ -82,5 +83,5 @@ endif()
 
 ament_export_targets(export_reachability HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(Eigen3 yaml-cpp)
+ament_export_dependencies(Eigen3 yaml-cpp Threads)
 ament_package()

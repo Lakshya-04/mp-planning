@@ -41,10 +41,10 @@ std::string mapFile()
 
 struct Fixture
 {
-  explicit Fixture(const std::string & base_profile = "")
+  explicit Fixture(const std::string & base_profile = "", const std::string & strategy = "greedy")
   {
     rclcpp::NodeOptions o;
-    o.parameter_overrides({{"map_file", mapFile()}, {"base_profile", base_profile}});
+    o.parameter_overrides({{"map_file", mapFile()}, {"base_profile", base_profile}, {"stand_strategy", strategy}});
     node = std::make_shared<reachability::ReachabilityNode>(o);
     client_node = std::make_shared<rclcpp::Node>("client");
     exec.add_node(node);
@@ -197,6 +197,19 @@ TEST(ReachabilityNode, PlanStandsCoversAWideWallAndAssignsEveryTargetOnce)
       for (const auto k : b.pose_indices) {EXPECT_EQ(mine.count(k), 1U);}
     }
   }
+}
+
+TEST(ReachabilityNode, PlanStandsSetCoverStrategyCoversTheWallWithNoMoreStandsThanGreedy)
+{
+  Fixture greedy;
+  Fixture cover("", "set_cover");
+  const auto g = greedy.call<PlanStands>(wideWall());
+  const auto c = cover.call<PlanStands>(wideWall());
+  EXPECT_TRUE(c->success) << c->message;
+  EXPECT_LE(c->stands.size(), g->stands.size());
+  std::multiset<uint32_t> seen;
+  for (const auto & s : c->stands) {seen.insert(s.target_indices.begin(), s.target_indices.end());}
+  EXPECT_EQ(seen.size(), 10U);
 }
 
 TEST(ReachabilityNode, PlanStandsReportsWhatTheStandCapLeftUnplanned)

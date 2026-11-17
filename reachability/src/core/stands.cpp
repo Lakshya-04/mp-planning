@@ -5,10 +5,24 @@
 namespace reachability
 {
 
+StandStrategy parseStandStrategy(const std::string & name, StandStrategy fallback)
+{
+  if (name == "greedy") {return StandStrategy::Greedy;}
+  if (name == "set_cover") {return StandStrategy::SetCover;}
+  return fallback;
+}
+
+StandPlan planStandsSetCover(
+  const Map4D & map, const StationRequest & request, const std::optional<Stand> & start,
+  size_t max_stands, const SetCoverOptions & cover);
+
 StandPlan planStands(
   const Map4D & map, const StationRequest & request, const std::optional<Stand> & start,
-  size_t max_stands)
+  size_t max_stands, StandStrategy strategy, const SetCoverOptions & cover)
 {
+  if (strategy == StandStrategy::SetCover) {
+    return planStandsSetCover(map, request, start, max_stands, cover);
+  }
   StandPlan plan;
   std::vector<size_t> left(request.targets_world.size());
   for (size_t i = 0; i < left.size(); ++i) {left[i] = i;}

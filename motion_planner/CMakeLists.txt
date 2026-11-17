@@ -27,6 +27,7 @@ find_package(yaml-cpp REQUIRED)
 add_library(motion_planner_core
   src/core/motion_planner.cpp
   src/core/planning_pipeline.cpp
+  src/core/time_parameterization.cpp
   src/core/planners/reachability_tilt.cpp
   src/core/planners/seed_preferring_ik.cpp
 )
@@ -85,6 +86,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(wall_penetration_check_test test/core/wall_penetration_check_test.cpp)
   target_link_libraries(wall_penetration_check_test motion_planner_core)
+
+  ament_add_gtest(time_parameterization_test test/core/time_parameterization_test.cpp)
+  target_link_libraries(time_parameterization_test motion_planner_core)
 
   ament_add_gtest(planning_pipeline_test test/core/planning_pipeline_test.cpp)
   target_link_libraries(planning_pipeline_test motion_planner_ros)

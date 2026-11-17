@@ -56,6 +56,12 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
     }
   }
 
+  const auto strategy = declare_parameter<std::string>("stand_strategy", "greedy");
+  stand_strategy_ = parseStandStrategy(strategy, StandStrategy::Greedy);
+  if (strategy != "greedy" && strategy != "set_cover") {
+    RCLCPP_WARN(get_logger(), "stand_strategy '%s' is not greedy or set_cover; using greedy", strategy.c_str());
+  }
+
   using namespace reachability_msgs::srv;
   is_reachable_ = create_service<IsReachable>(
     "~/is_reachable",
@@ -167,8 +173,7 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
       if (req->has_start) {
         start = Stand{Eigen::Vector2d(req->start_x, req->start_y), req->start_yaw};
       }
-      const StandPlan plan = req->max_stands > 0 ? planStands(*map_, r, start, req->max_stands) :
-                                                 planStands(*map_, r, start);
+      const StandPlan plan = planStands(*map_, r, start, req->max_stands > 0 ? req->max_stands : 32, stand_strategy_);
       for (const auto & a : plan.stands) {
         reachability_msgs::msg::Stand m;
         m.x = a.stand.arm_xy.x();

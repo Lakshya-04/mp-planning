@@ -1,0 +1,168 @@
+"""ROS-free core of the wall docking servo: from the fitted wall plane, drive the base to a standoff and square to the wall.
+
+The plane is `n . p + d = 0` with `n` the outward normal (pointing from the wall into the free space, as
+`wall_detector` writes it), in the base frame (x forward, y left, z up). Only the horizontal part of the
+normal matters: the base cannot tilt, and a plane whose normal is mostly vertical is a floor or a ceiling
+(no measurement).
+
+Two numbers drive the base:
+
+- standoff: distance from a reference point of the base (`ref_xy`, the arm base in practice) to the plane;
+- yaw error: the rotation that makes the base's facing axis (`facing_rad` from +x: 0 = the front, pi = the
+  back) point straight into the wall.
+
+Omni (and 4ws): translate along the wall normal and turn together. Diff and skid: no sideways velocity, so
+turn first until the yaw error is small, then drive along the facing axis (turning on the yaw error), so the
+motion is along the wall normal (the facing axis must be the drive axis: 0 or pi). Velocity and acceleration
+limits come from the same `BaseProfile` as the stand navigator; docked is standoff and yaw within tolerance
+with the base nearly at rest.
+"""
+import math
+from dataclasses import dataclass
+from enum import Enum
+
+from stand_navigator.core import clamp, wrap
+
+
+class DockStatus(Enum):
+    RUNNING = 'running'
+    SUCCESS = 'success'
+    TIMEOUT = 'timeout'
+    NO_WALL = 'no_wall'
+
+
+@dataclass
+class DockTolerance:
+    standoff: float = 0.005     # m
+    yaw: float = 0.02           # rad
+    speed: float = 0.02         # m/s and rad/s the base must be below to count as docked
+
+
+@dataclass
+class WallMeasurement:
+    standoff: float             # m, reference point to plane along the normal (positive on the free side)
+    yaw_error: float            # rad, rotation that squares the facing axis to the wall
+    into_wall: float            # rad, direction of the wall normal (into the wall) in the base frame
+    tilt: float                 # rad, angle of the normal from the horizontal plane
+
+
+def plane_to_world(plane, pose):
+    """Plane (a, b, c, d) in the base frame -> in the odom frame, for the base pose (x, y, yaw)."""
+    a, b, c, d = plane
+    cy, sy = math.cos(pose[2]), math.sin(pose[2])
+    nx, ny = cy * a - sy * b, sy * a + cy * b
+    return nx, ny, c, d - (nx * pose[0] + ny * pose[1])
+
+
+def plane_to_base(plane, pose):
+    """Plane in the odom frame -> in the base frame, for the base pose."""
+    a, b, c, d = plane
+    cy, sy = math.cos(pose[2]), math.sin(pose[2])
+    return cy * a + sy * b, -sy * a + cy * b, c, d + a * pose[0] + b * pose[1]
+
+
+def measure_wall(plane, ref_xy=(0.0, 0.0), facing_rad=0.0, max_tilt_rad=0.5):
+    """Standoff and yaw error from a base-frame plane, or None when it is not a usable wall
+    (non-finite, normal too vertical, reference point behind the plane)."""
+    if not all(map(math.isfinite, plane)):
+        return None
+    a, b, c, d = plane
+    n = math.sqrt(a * a + b * b + c * c)
+    if n < 1e-9:
+        return None
+    a, b, c, d = a / n, b / n, c / n, d / n
+    tilt = math.asin(min(1.0, abs(c)))
+    if tilt > max_tilt_rad:
+        return None
+    standoff = (a * ref_xy[0] + b * ref_xy[1] + d) / max(math.hypot(a, b), 1e-9)   # along the horizontal normal
+    if standoff < 0.0:
+        return None
+    into = math.atan2(-b, -a)
+    return WallMeasurement(standoff, wrap(into - facing_rad), into, tilt)
+
+
+@dataclass
+class DockStep:
+    cmd: tuple                  # (vx, vy, wz) in the base frame
+    status: DockStatus
+    standoff_error: float = 0.0
+    yaw_error: float = 0.0
+
+
+class WallDockController:
+    """Proportional standoff and yaw servo with velocity and acceleration limits, tolerances and a timeout.
+
+    `step(measurement, dt, lin_speed, ang_speed)` returns a `DockStep`. Pass `None` when there is no fresh
+    plane: the command decays to zero, and after `wall_timeout_s` without one the status is NO_WALL.
+    """
+
+    def __init__(self, profile, standoff, tol=None, timeout_s=60.0, wall_timeout_s=2.0, facing_rad=0.0,
+                 kp_lin=1.0, kp_ang=1.5, turn_first_rad=0.15, max_lin=None, max_ang=None, creep=0.01):
+        self.p, self.standoff, self.facing = profile, standoff, facing_rad
+        self.tol = tol or DockTolerance()
+        self.timeout_s, self.wall_timeout_s = timeout_s, wall_timeout_s
+        self.kp_lin, self.kp_ang, self.turn_first = kp_lin, kp_ang, turn_first_rad
+        # docking is close to a wall: the caller may cap the speeds below the profile's travel speeds
+        self.max_lin = min(max_lin, profile.max_lin) if max_lin else profile.max_lin
+        self.max_ang = min(max_ang, profile.max_ang) if max_ang else profile.max_ang
+        self.creep = creep          # m/s and rad/s floor so a small error still closes
+        self.cmd = (0.0, 0.0, 0.0)
+        self.elapsed = 0.0
+        self.since_wall = 0.0
+        self.turning = False
+
+    def _target(self, m):
+        p = self.p
+        e = m.standoff - self.standoff               # positive: too far, drive toward the wall
+        yaw = m.yaw_error
+        wz = clamp(self.kp_ang * yaw,
+                   min(self.max_ang, math.sqrt(2.0 * p.max_ang_acc * abs(yaw)) + self.creep))
+        speed = 0.0
+        if abs(e) > 0.5 * self.tol.standoff:
+            speed = min(self.kp_lin * abs(e), self.max_lin,
+                        math.sqrt(2.0 * p.max_lin_acc * abs(e)) + self.creep)
+        sign = 1.0 if e > 0 else -1.0
+        if p.holonomic:
+            return (sign * speed * math.cos(m.into_wall), sign * speed * math.sin(m.into_wall), wz)
+        if abs(yaw) > self.turn_first:
+            self.turning = True
+        elif abs(yaw) < 0.5 * self.turn_first:
+            self.turning = False
+        if self.turning:
+            return 0.0, 0.0, wz
+        # facing axis forward (facing 0) or backward (facing pi); the cosine drops the speed while the yaw is off
+        fwd = 1.0 if math.cos(self.facing) >= 0.0 else -1.0
+        return sign * fwd * speed * max(0.0, math.cos(yaw)), 0.0, wz
+
+    def step(self, m, dt, lin_speed=0.0, ang_speed=0.0):
+        p = self.p
+        self.elapsed += dt
+        e = (0.0, 0.0)
+        if m is None:
+            self.since_wall += dt
+            tx = ty = tw = 0.0
+            status = DockStatus.NO_WALL if self.since_wall > self.wall_timeout_s else DockStatus.RUNNING
+        else:
+            self.since_wall = 0.0
+            tx, ty, tw = self._target(m)
+            e = (m.standoff - self.standoff, m.yaw_error)
+            status = DockStatus.RUNNING
+            if (abs(e[0]) <= self.tol.standoff and abs(e[1]) <= self.tol.yaw
+                    and lin_speed <= self.tol.speed and ang_speed <= self.tol.speed):
+                status = DockStatus.SUCCESS
+        if status == DockStatus.RUNNING and self.elapsed > self.timeout_s:
+            status = DockStatus.TIMEOUT
+        if status != DockStatus.RUNNING and status != DockStatus.NO_WALL:
+            tx = ty = tw = 0.0
+        n = math.hypot(tx, ty)
+        if n > self.max_lin:
+            tx, ty = tx * self.max_lin / n, ty * self.max_lin / n
+        tw = clamp(tw, self.max_ang)
+        dv = p.max_lin_acc * dt
+        ex, ey = tx - self.cmd[0], ty - self.cmd[1]
+        en = math.hypot(ex, ey)
+        if en > dv:
+            ex, ey = ex * dv / en, ey * dv / en
+        wz = self.cmd[2] + clamp(tw - self.cmd[2], p.max_ang_acc * dt)
+        self.cmd = (self.cmd[0] + ex, self.cmd[1] + ey, wz)
+        return DockStep(self.cmd, status, e[0], e[1])

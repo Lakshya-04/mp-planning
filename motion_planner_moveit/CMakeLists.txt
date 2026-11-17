@@ -50,6 +50,7 @@ add_library(motion_planner_moveit_lib
   src/moveit_scene_adapter.cpp
   src/cartesian_planner.cpp
   src/ompl_planner.cpp
+  src/moveit_time_parameterizer.cpp
 )
 target_include_directories(motion_planner_moveit_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -89,6 +90,14 @@ target_link_libraries(coverage_pass_demo_node motion_planner_moveit_lib nlohmann
 ament_target_dependencies(coverage_pass_demo_node
   rclcpp rclcpp_action control_msgs std_msgs geometry_msgs)
 
+# Benchmark helper (OMPL RRT-Connect on a MoveIt PlanningScene), driven by scripts/planner_benchmark.py.
+find_package(ompl REQUIRED)
+add_executable(planner_benchmark src/planner_benchmark.cpp)
+target_include_directories(planner_benchmark PRIVATE ${OMPL_INCLUDE_DIRS})
+target_link_libraries(planner_benchmark motion_planner_moveit_lib ${OMPL_LIBRARIES})
+install(TARGETS planner_benchmark RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/planner_benchmark.py DESTINATION lib/${PROJECT_NAME})
+
 install(TARGETS motion_planner_moveit_lib
   EXPORT export_motion_planner_moveit
   ARCHIVE DESTINATION lib
@@ -125,6 +134,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(moveit_planning_backend_test test/moveit_planning_backend_test.cpp)
   target_link_libraries(moveit_planning_backend_test motion_planner_moveit_lib)
+
+  ament_add_gtest(moveit_time_parameterizer_test test/moveit_time_parameterizer_test.cpp)
+  target_link_libraries(moveit_time_parameterizer_test motion_planner_moveit_lib)
 endif()
 
 ament_export_targets(export_motion_planner_moveit HAS_LIBRARY_TARGET)

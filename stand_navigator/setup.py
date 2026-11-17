@@ -12,7 +12,9 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    entry_points={'console_scripts': ['stand_navigator_node = stand_navigator.ros_node:main']},
+    entry_points={'console_scripts': [
+        'stand_navigator_node = stand_navigator.ros_node:main',
+        'wall_docking_node = stand_navigator.wall_docking_node:main']},
     maintainer='Lakshya Agarwal',
     maintainer_email='100lakshyaagarwal@gmail.com',
     description='Drive the base to a reachability stand',

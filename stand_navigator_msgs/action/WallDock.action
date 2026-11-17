@@ -1,0 +1,24 @@
+# Servo the base to a standoff from, and square to, the wall plane fitted by wall_detector, for the last
+# metres after NavigateToStand. The base is driven on /cmd_vel from the plane (normal and distance in the
+# base frame), so the result does not depend on how well the stand was reached.
+#
+# standoff_m: distance from the reference point (the arm base unless the node is configured otherwise) to the plane.
+# timeout_s: 0 uses the node's default.
+float64 standoff_m
+float64 timeout_s
+---
+uint16 NONE=0
+uint16 UNKNOWN=1
+uint16 INVALID_GOAL=2
+uint16 TIMEOUT=3
+uint16 NO_ODOM=4
+uint16 CANCELED=5
+uint16 NO_WALL=6          # no fresh plane (none received, it went stale, or it is not a usable wall)
+uint16 error_code
+string error_msg
+# final errors against the last plane
+float64 standoff_error_m   # measured standoff minus the goal
+float64 yaw_error_rad      # rotation still needed to square to the wall
+---
+float64 standoff_error_m
+float64 yaw_error_rad

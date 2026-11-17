@@ -12,6 +12,7 @@
 #include <reachability_msgs/srv/plan_stands.hpp>
 
 #include "reachability/core/base_model.hpp"
+#include "reachability/core/stands.hpp"
 #include "reachability/core/map4d.hpp"
 
 namespace reachability
@@ -31,6 +32,7 @@ public:
 private:
   std::shared_ptr<Map4D> map_;
   std::optional<BaseModel> base_;
+  StandStrategy stand_strategy_{StandStrategy::Greedy};   ///< Parameter `stand_strategy`: greedy | set_cover.
   rclcpp::Service<reachability_msgs::srv::IsReachable>::SharedPtr is_reachable_;
   rclcpp::Service<reachability_msgs::srv::GetBaseCandidates>::SharedPtr base_candidates_;
   rclcpp::Service<reachability_msgs::srv::PlanLiftBands>::SharedPtr lift_bands_;

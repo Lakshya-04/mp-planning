@@ -37,7 +37,7 @@ def _config_path(*parts):
     return os.path.join(get_package_share_directory(PACKAGE), 'config', *parts)
 
 
-def build_moveit_config(arm=None, hardware='mock', ik='trac_ik', profile=None):
+def build_moveit_config(arm=None, hardware='mock', ik='trac_ik', profile=None, live_octomap=False):
     """MoveItConfigs for a profile with the lift + arm planning groups and the given hardware.
 
     `profile` (name or path, default ur10e_telescopic) says which arm, how many joints and what
@@ -45,7 +45,9 @@ def build_moveit_config(arm=None, hardware='mock', ik='trac_ik', profile=None):
     overrides the profile's arm only where the joint names stay the same (ur5e on a UR profile);
     otherwise a ValueError says they disagree. `ik` picks the kinematics solver: 'trac_ik' (default: stays on
     the seed's branch on large moves), 'kdl' (ships with MoveIt) or 'pick_ik' (opt-in, untuned);
-    see docs/moveit_config.md. Use resolve_profile(arm, profile) for the same profile object.
+    see docs/moveit_config.md. `live_octomap=True` adds config/sensors_3d.yaml (MoveIt's
+    PointCloudOctomapUpdater on /depth_sensor/points; needs moveit_ros_perception, docs/perception_live.md).
+    Use resolve_profile(arm, profile) for the same profile object.
     """
     prof = resolve_profile(arm, profile)
     if arm and arm != prof.arm and profile and \
@@ -60,7 +62,7 @@ def build_moveit_config(arm=None, hardware='mock', ik='trac_ik', profile=None):
     limits = (f'config/{family}/joint_limits.yaml'
               if os.path.isfile(_config_path(family, 'joint_limits.yaml'))
               else 'config/joint_limits.yaml')
-    cfg = (
+    builder = (
         MoveItConfigsBuilder(prof.robot_name, package_name=PACKAGE)
         .robot_description(
             file_path=os.path.join(description, 'urdf', 'mobile_manipulator.urdf.xacro'),
@@ -73,8 +75,10 @@ def build_moveit_config(arm=None, hardware='mock', ik='trac_ik', profile=None):
         .joint_limits(file_path=limits)
         .trajectory_execution(file_path=f'config/{family}/moveit_controllers.yaml')
         .planning_pipelines(pipelines=['ompl'])
-        .to_moveit_configs()
     )
+    if live_octomap:
+        builder = builder.sensors_3d(file_path='config/sensors_3d.yaml')
+    cfg = builder.to_moveit_configs()
     # {'robot_description_kinematics': {<group>: {...}}}: rename the groups to the profile's.
     kin = cfg.robot_description_kinematics['robot_description_kinematics']
     cfg.robot_description_kinematics['robot_description_kinematics'] = {

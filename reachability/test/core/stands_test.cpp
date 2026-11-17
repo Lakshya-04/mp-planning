@@ -170,3 +170,130 @@ TEST(Stands, UnreachableTargetsAreReportedNotLooped)
   ASSERT_EQ(plan.unreachable.size(), 1U);
   EXPECT_EQ(plan.unreachable[0], 0U);
 }
+
+// ---- StandStrategy::SetCover ----
+
+namespace
+{
+// Four lone targets and a dense column in the middle: the arm reaches about 2.4 m along the wall, so the
+// densest window (the middle) leaves one target at each end, 4.4 m apart, and greedy-by-panel needs a third
+// stand. Two windows, each taking one end plus part of the middle, cover everything.
+std::vector<Pose> trapWall(double outer, double inner)
+{
+  auto t = wall({-outer, -inner, inner, outer}, {1.0});
+  const auto mid = wall({0.0}, {0.8, 1.0, 1.2});
+  t.insert(t.end(), mid.begin(), mid.end());
+  return t;
+}
+
+void expectEachTargetOnce(const StandPlan & p, size_t n)
+{
+  std::multiset<size_t> seen(p.unreachable.begin(), p.unreachable.end());
+  seen.insert(p.not_planned.begin(), p.not_planned.end());
+  for (const auto & s : p.stands) {seen.insert(s.targets.begin(), s.targets.end());}
+  ASSERT_EQ(seen.size(), n);
+  for (size_t i = 0; i < n; ++i) {EXPECT_EQ(seen.count(i), 1U) << i;}
+}
+}  // namespace
+
+TEST(StandsSetCover, FewerStandsAndLessDrivingWhereGreedyByPanelIsSuboptimal)
+{
+  for (const double inner : {0.9, 1.1}) {
+    auto r = request(trapWall(2.2, inner));
+    r.base = box(true);
+    const Stand start{Eigen::Vector2d(1.0, -2.7), 0.0};
+    const auto greedy = planStands(sharedMap(), r, start);
+    const auto cover = planStands(sharedMap(), r, start, 32, StandStrategy::SetCover);
+    EXPECT_TRUE(greedy.unreachable.empty());
+    EXPECT_TRUE(cover.unreachable.empty());
+    EXPECT_TRUE(cover.not_planned.empty());
+    EXPECT_EQ(greedy.stands.size(), 3U) << inner;
+    EXPECT_EQ(cover.stands.size(), 2U) << inner;
+    EXPECT_LT(cover.total_travel_s, greedy.total_travel_s) << inner;
+    expectEachTargetOnce(cover, r.targets_world.size());
+    double sum = 0.0;
+    for (const auto & s : cover.stands) {sum += s.travel_s;}
+    EXPECT_NEAR(sum, cover.total_travel_s, 1e-9);
+  }
+}
+
+TEST(StandsSetCover, IsNeverWorseThanGreedyOnTheOtherWalls)
+{
+  const std::vector<std::vector<double>> widths = {
+    {-3.0, -1.5, 0.0, 1.5, 3.0}, {-1.8, -1.0, -0.2, 0.6, 1.4, 2.2}, {-2.0, -1.2, 0.0, 1.2, 2.0, 3.2, 3.6}};
+  for (const bool strafe : {true, false}) {
+    for (const auto & ys : widths) {
+      auto r = request(wall(ys, {0.8, 1.4}));
+      r.base = box(strafe);
+      const Stand start{Eigen::Vector2d(1.0, ys.front() - 0.5), 0.0};
+      const auto greedy = planStands(sharedMap(), r, start);
+      const auto cover = planStands(sharedMap(), r, start, 32, StandStrategy::SetCover);
+      EXPECT_LE(cover.stands.size(), greedy.stands.size());
+      EXPECT_TRUE(cover.unreachable.empty());
+      EXPECT_TRUE(cover.not_planned.empty());
+      if (cover.stands.size() == greedy.stands.size()) {
+        EXPECT_LE(cover.total_travel_s, greedy.total_travel_s + 1e-9);
+      }
+      expectEachTargetOnce(cover, r.targets_world.size());
+    }
+  }
+}
+
+TEST(StandsSetCover, GreedyStaysTheDefault)
+{
+  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}));
+  const auto a = planStands(sharedMap(), r);
+  const auto b = planStands(sharedMap(), r, std::nullopt, 32, StandStrategy::Greedy);
+  ASSERT_EQ(a.stands.size(), b.stands.size());
+  for (size_t i = 0; i < a.stands.size(); ++i) {
+    EXPECT_EQ(a.stands[i].targets, b.stands[i].targets);
+    EXPECT_EQ(a.stands[i].station.y, b.stands[i].station.y);
+  }
+  EXPECT_EQ(parseStandStrategy("set_cover"), StandStrategy::SetCover);
+  EXPECT_EQ(parseStandStrategy("greedy", StandStrategy::SetCover), StandStrategy::Greedy);
+  EXPECT_EQ(parseStandStrategy("bogus"), StandStrategy::Greedy);
+}
+
+TEST(StandsSetCover, WithoutABaseModelThereIsNoTravelAndBandIndicesAreGlobal)
+{
+  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}));
+  const auto plan = planStands(sharedMap(), r, std::nullopt, 32, StandStrategy::SetCover);
+  ASSERT_GE(plan.stands.size(), 2U);
+  EXPECT_EQ(plan.total_travel_s, 0.0);
+  expectEachTargetOnce(plan, r.targets_world.size());
+  for (const auto & s : plan.stands) {
+    EXPECT_EQ(s.travel_s, 0.0);
+    const std::set<size_t> mine(s.targets.begin(), s.targets.end());
+    size_t in_bands = 0;
+    for (const auto & b : s.station.plan.bands) {
+      for (const size_t k : b.pose_indices) {EXPECT_EQ(mine.count(k), 1U); ++in_bands;}
+    }
+    EXPECT_EQ(in_bands, s.targets.size());
+  }
+}
+
+TEST(StandsSetCover, UnreachableAndCappedTargetsAreReportedSeparately)
+{
+  const auto far = planStands(sharedMap(), request(wall({0.0}, {5.0})), std::nullopt, 32, StandStrategy::SetCover);
+  EXPECT_TRUE(far.stands.empty());
+  ASSERT_EQ(far.unreachable.size(), 1U);
+
+  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}));
+  const auto cap = planStands(sharedMap(), r, std::nullopt, 1, StandStrategy::SetCover);
+  ASSERT_EQ(cap.stands.size(), 1U);
+  EXPECT_TRUE(cap.unreachable.empty());
+  EXPECT_EQ(cap.not_planned.size() + cap.stands[0].targets.size(), r.targets_world.size());
+}
+
+TEST(StandsSetCover, ANodeBudgetOfZeroKeepsTheWeightedGreedyCover)
+{
+  auto r = request(trapWall(2.2, 0.9));
+  r.base = box(true);
+  const Stand start{Eigen::Vector2d(1.0, -2.7), 0.0};
+  SetCoverOptions o;
+  o.node_budget = 0;
+  const auto plan = planStands(sharedMap(), r, start, 32, StandStrategy::SetCover, o);
+  EXPECT_TRUE(plan.unreachable.empty());
+  expectEachTargetOnce(plan, r.targets_world.size());
+  EXPECT_GE(plan.stands.size(), 2U);
+}

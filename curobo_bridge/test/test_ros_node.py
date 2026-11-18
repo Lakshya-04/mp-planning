@@ -25,6 +25,7 @@ class FakePlanner:
 
     def __init__(self):
         self.world = None
+        self.cleared = 0
         self.pose_args = None
 
     def plan_joint(self, start, goal):
@@ -64,6 +65,10 @@ class FakePlanner:
     def set_esdf(self, field, center=None):
         self.esdf_args = (field.copy(), tuple(center))
         return 1
+
+    def clear_world(self):
+        self.cleared += 1
+        self.world = None
 
     def set_world(self, boxes=(), points=None, point_voxel=0.05):
         if len(boxes) > self.max_boxes:
@@ -155,7 +160,8 @@ def test_set_world_takes_boxes_and_points(harness):
 def test_empty_request_clears_and_errors_are_reported(harness):
     fake, call = harness
     r = call(msgs.SetWorld, 'set_world', msgs.SetWorld.Request())
-    assert r.success and r.box_count == 0 and fake.world == ([], None, 0.05)
+    assert r.success and r.box_count == 0
+    assert fake.cleared == 1 and fake.world is None   # an empty world is a clear, not a set_world
     req = msgs.SetWorld.Request()
     req.boxes = [Box() for _ in range(11)]
     r = call(msgs.SetWorld, 'set_world', req)

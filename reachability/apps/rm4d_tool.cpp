@@ -7,7 +7,7 @@
 //                            [--lift-max H] [--lift-step dh] [--mount-z dz] [--base-x bx] [--base-y by]
 //   rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W] [--z-step dz] [--y-step dy]
 //                              [--lift-max H] [--mount-z dz] [--min-clearance c] [--grid-step g] [--base-profile profile.yaml]
-//                              [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover]   several stands with travel time
+//                              [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover|global [--margin-penalty w --time-budget s]]   several stands with travel time
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +19,7 @@
 #include "reachability/core/builder.hpp"
 #include "reachability/core/io.hpp"
 #include "reachability/core/lift_bands.hpp"
+#include "reachability/core/global_stands.hpp"
 #include "reachability/core/station.hpp"
 #include "reachability/core/stands.hpp"
 
@@ -52,7 +53,7 @@ int usage()
     "  rm4d_tool info map.rm4d\n"
     "  rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz --lift-max H --lift-step dh --mount-z dz --base-x bx --base-y by]\n"
     "  rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W --z-step dz --y-step dy --lift-max H --mount-z dz --min-clearance c --grid-step g --base-profile profile.yaml\n"
-    "    [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover]]\n");
+    "    [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover|global [--margin-penalty w --time-budget s]]]\n");
   return 2;
 }
 }  // namespace
@@ -149,6 +150,22 @@ int main(int argc, char ** argv)
       if (num(o, "multi", 0) != 0) {
         const Stand start{Eigen::Vector2d(num(o, "start-x", 0.0), num(o, "start-y", -half)), 0.0};
         const auto strat = o.find("strategy");
+        if (strat != o.end() && strat->second == "global") {
+          StandSelectionOptions so;
+          so.margin_penalty = num(o, "margin-penalty", so.margin_penalty);
+          so.time_budget_s = num(o, "time-budget", so.time_budget_s);
+          const StandSelection sel = selectStands(map, r, start, so);
+          std::printf("%s (%s): %zu stand(s) for %zu targets, %zu unreachable, tour %.1f vs cover order %.1f%s, %.3f s solve\n",
+            sel.success ? "ok" : "failed", toString(sel.code), sel.stands.size(), r.targets_world.size(),
+            sel.unreachable.size(), sel.tour_cost, sel.input_order_cost, r.base ? " s" : " m", sel.solve_time_s);
+          for (const auto & a : sel.stands) {
+            std::printf("  arm base (%.2f, %.2f) yaw %.0f deg: %zu targets, %zu band(s), margin %.2f, +%.1f\n",
+              a.stand.arm_xy.x(), a.stand.arm_xy.y(), a.stand.yaw * 180.0 / M_PI, a.targets.size(),
+              a.lift_bands.bands.size(), a.mean_margin, a.travel_cost);
+          }
+          for (const size_t t : sel.unreachable) {std::printf("  unreachable target %zu\n", t);}
+          return sel.success ? 0 : 1;
+        }
         const StandPlan sp = planStands(map, r, start, 32,
           parseStandStrategy(strat == o.end() ? "greedy" : strat->second));
         std::printf("%zu stand(s) for %zu targets, %zu unreachable, %zu not planned (stand cap), %.1f s driving\n",

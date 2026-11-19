@@ -1,8 +1,10 @@
 #include "curobo_planner/curobo_planner.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <mutex>
 
 #include <Eigen/Geometry>
 #include <curobo_bridge_msgs/msg/box.hpp>
@@ -52,6 +54,13 @@ mp::PlanningResult toResult(const Response & res)
   mp::PlanningResult r;
   r.success = true;
   r.status = "success";
+  if (res.route == "graph_seed") {
+    // PlanningResult has no route field: carry it in `status` (nothing parses it) and `message`, so an
+    // unsmoothed graph path is not mistaken for an optimised one.
+    r.status = "success_graph_seed";
+    r.message = res.message.empty() ? "trajectory optimisation failed; graph path returned (not optimised)" :
+      res.message;
+  }
   r.path_fraction = 1.0;
   r.planning_time_ms = static_cast<uint64_t>(res.planning_time_s * 1000.0);
   r.trajectory.joint_names = res.trajectory.joint_names;
@@ -86,6 +95,28 @@ struct CuroboClientPlanner::Impl
   rclcpp::Client<SolveIk>::SharedPtr solve_ik;
   rclcpp::Client<SetEsdf>::SharedPtr set_esdf;
   rclcpp::Client<CheckMotion>::SharedPtr check_motion;
+  /// Set when a world update did not reach the node: its previous world is still active, so plans,
+  /// IK and checks would run against obstacles that no longer match the scene. Cleared by the next
+  /// update that succeeds.
+  std::atomic<bool> world_stale{false};
+  std::mutex stale_mutex;
+  std::string stale_reason;
+
+  void markStale(const std::string & why)
+  {
+    std::lock_guard<std::mutex> lock(stale_mutex);
+    stale_reason = why;
+    world_stale = true;
+  }
+  /// True (with the reason in `message`) when the node holds a world that no longer matches the scene.
+  bool staleMessage(std::string & message)
+  {
+    if (!world_stale) {return false;}
+    std::lock_guard<std::mutex> lock(stale_mutex);
+    message = "the last world update failed (" + stale_reason +
+      "); the planner still holds the previous world. Send a successful world update or clear first";
+    return true;
+  }
 
   template<typename Srv>
   typename Srv::Response::SharedPtr call(
@@ -123,12 +154,15 @@ CuroboClientPlanner::CuroboClientPlanner(
 
 CuroboClientPlanner::~CuroboClientPlanner() = default;
 
+void CuroboClientPlanner::setBaseFrame(const std::string & frame) {impl_->options.base_frame = frame;}
+
 mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request)
 {
   if (request.start_joint_state.empty()) {
     return fail("invalid_request", "start_joint_state is required", mp::FailureStage::kPrecheck);
   }
   std::string error;
+  if (impl_->staleMessage(error)) {return fail("world_stale", error, mp::FailureStage::kPrecheck);}
   if (!request.target_joint_state.empty()) {
     auto req = std::make_shared<PlanJoint::Request>();
     req->start = request.start_joint_state;
@@ -155,6 +189,20 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
 }
 
 bool CuroboClientPlanner::setWorld(const mp::WorldGeometryUpdate & world, std::string * message)
+{
+  std::string local;
+  std::string * out = message ? message : &local;
+  out->clear();
+  const bool ok = sendWorld(world, out);
+  if (ok) {
+    impl_->world_stale = false;
+  } else {
+    impl_->markStale(*out);
+  }
+  return ok;
+}
+
+bool CuroboClientPlanner::sendWorld(const mp::WorldGeometryUpdate & world, std::string * message)
 {
   if (!impl_->options.base_frame.empty() && !world.frame_id.empty() && world.frame_id != impl_->options.base_frame) {
     if (message) {
@@ -271,6 +319,10 @@ mp::IkResult CuroboClientPlanner::ik(const mp::IkRequest & request)
 {
   mp::IkResult out;
   out.failure_stage = mp::FailureStage::kPrecheck;
+  if (impl_->staleMessage(out.message)) {
+    out.failure_reason_code = "world_stale";
+    return out;
+  }
   const auto & t = request.target_pose;
   if (t.size() != 6 && t.size() != 7) {
     out.failure_reason_code = "invalid_request";
@@ -318,6 +370,10 @@ mp::CollisionResult CuroboClientPlanner::collision(const mp::CollisionRequest & 
 {
   mp::CollisionResult out;
   out.failure_stage = mp::FailureStage::kPrecheck;
+  if (impl_->staleMessage(out.message)) {
+    out.failure_reason_code = "world_stale";
+    return out;
+  }
   if (!request.target_pose.empty() || !request.trajectory_poses.empty()) {
     out.failure_reason_code = "unsupported";
     out.message = "pose-based collision checks are not supported; give joint values";
@@ -328,29 +384,42 @@ mp::CollisionResult CuroboClientPlanner::collision(const mp::CollisionRequest & 
     out.message = "need joint_values or trajectory_joint_values";
     return out;
   }
-  auto req = std::make_shared<CheckMotion::Request>();
-  auto add = [&req](const std::vector<double> & q) {
-      trajectory_msgs::msg::JointTrajectoryPoint p;
-      p.positions = q;
-      req->states.points.push_back(p);
+  // joint_values is an isolated state; the trajectory is a path. They are two requests: one request
+  // with both would also interpolate and check the straight line joint_values -> trajectory[0].
+  auto check = [&](const std::vector<std::vector<double>> & states, double max_step, bool & clear) {
+      auto req = std::make_shared<CheckMotion::Request>();
+      for (const auto & q : states) {
+        trajectory_msgs::msg::JointTrajectoryPoint p;
+        p.positions = q;
+        req->states.points.push_back(p);
+      }
+      req->max_step = max_step;
+      std::string error;
+      auto res = impl_->call<CheckMotion>(impl_->check_motion, req, error);
+      if (!res) {
+        out.failure_reason_code = "unavailable";
+        out.message = error;
+        return false;
+      }
+      if (!res->success) {
+        out.failure_reason_code = "invalid_request";
+        out.message = res->message;
+        return false;
+      }
+      clear = res->collision_free;
+      return true;
     };
-  if (!request.joint_values.empty()) {add(request.joint_values);}
-  for (const auto & q : request.trajectory_joint_values) {add(q);}
-  req->max_step = request.trajectory_joint_values.size() > 1 ? 0.05 : 0.0;
-  std::string error;
-  auto res = impl_->call<CheckMotion>(impl_->check_motion, req, error);
-  if (!res) {
-    out.failure_reason_code = "unavailable";
-    out.message = error;
-    return out;
+  bool clear = true;
+  if (!request.joint_values.empty()) {
+    if (!check({request.joint_values}, 0.0, clear)) {return out;}
   }
-  if (!res->success) {
-    out.failure_reason_code = "invalid_request";
-    out.message = res->message;
-    return out;
+  if (clear && !request.trajectory_joint_values.empty()) {
+    if (!check(request.trajectory_joint_values, request.trajectory_joint_values.size() > 1 ? 0.05 : 0.0, clear)) {
+      return out;
+    }
   }
   out.success = true;
-  out.collision_free = res->collision_free;
+  out.collision_free = clear;
   out.failure_stage = mp::FailureStage::kNone;
   return out;
 }

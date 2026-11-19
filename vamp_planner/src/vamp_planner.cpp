@@ -107,6 +107,8 @@ void VampPlanner::setWorld(const mp::WorldGeometryUpdate & world)
   impl_->world_set = true;
 }
 
+void VampPlanner::setBaseFrame(const std::string & frame) {impl_->options.base_frame = frame;}
+
 bool VampPlanner::updateWorldGeometry(const mp::WorldGeometryUpdate & update, std::string & error_message)
 {
   error_message.clear();

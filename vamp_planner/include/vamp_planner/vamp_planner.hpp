@@ -42,6 +42,10 @@ public:
   /// Names of the robots compiled into this build.
   static std::vector<std::string> availableRobots();
 
+  /// Sets Options::base_frame after construction. The plugins share one planner per robot, so a
+  /// plugin whose params name a base_frame applies it to the planner it got. Call before planning.
+  void setBaseFrame(const std::string & frame);
+
   /// False when `options.robot` is not compiled in.
   bool ok() const;
   size_t dimension() const;

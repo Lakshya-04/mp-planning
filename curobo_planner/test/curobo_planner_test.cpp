@@ -52,6 +52,8 @@ public:
         r->success = true;
         r->failure_reason_code = "none";
         r->planning_time_s = 0.5;
+        r->route = q->goal[0] == 3.0 ? "graph_seed" : "trajopt";
+        if (q->goal[0] == 3.0) {r->message = "trajectory optimisation failed; returned the validated graph path (not optimised)";}
         r->trajectory.joint_names = {"j1", "j2"};
         for (int i = 0; i < 3; ++i) {
           trajectory_msgs::msg::JointTrajectoryPoint p;
@@ -89,6 +91,7 @@ public:
     check_srv = node->create_service<CheckMotion>(
       "~/check_motion", [this](const CheckMotion::Request::SharedPtr q, CheckMotion::Response::SharedPtr r) {
         last_check = *q;
+        checks.push_back(*q);
         r->success = true;
         r->collision_free = true;
         for (const auto & p : q->states.points) {
@@ -113,6 +116,7 @@ public:
   rclcpp::Service<CheckMotion>::SharedPtr check_srv;
   SolveIk::Request last_ik;
   CheckMotion::Request last_check;
+  std::vector<CheckMotion::Request> checks;
   rclcpp::Service<PlanJoint>::SharedPtr joint;
   rclcpp::Service<PlanPose>::SharedPtr pose;
   rclcpp::Service<SetWorld>::SharedPtr world;
@@ -262,6 +266,89 @@ TEST(CuroboClient, CollisionChecksStatesAndMotions)
   mp::CollisionRequest pose_based;
   pose_based.target_pose = {0, 0, 0, 0, 0, 0};
   EXPECT_EQ(f.planner->collision(pose_based).failure_reason_code, "unsupported");
+}
+
+TEST(CuroboClient, DefaultTimeoutCoversTheSlowestMeasuredPlan)
+{
+  // 33 s (20 failed attempts) + 0.4 s (seed fallback), docs/planner_benchmark.md: a smaller default
+  // abandons plans the node still finishes, and the next call then waits behind them.
+  EXPECT_GT(curobo_planner::Options{}.timeout_sec, 33.4);
+}
+
+TEST(CuroboClient, JointValuesAndATrajectoryAreCheckedSeparately)
+{
+  Fixture f;
+  mp::CollisionRequest c;
+  c.joint_values = {0.9, 0.0};
+  c.trajectory_joint_values = {{0.0, 0.0}, {0.1, 0.0}};
+  const auto res = f.planner->collision(c);
+  ASSERT_TRUE(res.success) << res.message;
+  EXPECT_TRUE(res.collision_free);
+  // The state is isolated (one state, no motion check); only the trajectory is interpolated. A single
+  // request with both would also have checked the straight line joint_values -> trajectory[0].
+  ASSERT_EQ(f.server->checks.size(), 2U);
+  EXPECT_EQ(f.server->checks[0].states.points.size(), 1U);
+  EXPECT_DOUBLE_EQ(f.server->checks[0].max_step, 0.0);
+  EXPECT_EQ(f.server->checks[1].states.points.size(), 2U);
+  EXPECT_GT(f.server->checks[1].max_step, 0.0);
+
+  // An invalid isolated state fails the combination (the stub marks x >= 1 invalid) without a second call.
+  f.server->checks.clear();
+  c.joint_values = {2.0, 0.0};
+  const auto bad = f.planner->collision(c);
+  ASSERT_TRUE(bad.success) << bad.message;
+  EXPECT_FALSE(bad.collision_free);
+  // And an invalid trajectory fails it too.
+  c.joint_values = {0.5, 0.0};
+  c.trajectory_joint_values = {{0.0, 0.0}, {2.0, 0.0}};
+  EXPECT_FALSE(f.planner->collision(c).collision_free);
+}
+
+TEST(CuroboClient, GraphSeedRouteReachesTheResult)
+{
+  Fixture f;
+  auto res = f.planner->plan(jointRequest(3.0));
+  ASSERT_TRUE(res.success) << res.message;
+  EXPECT_EQ(res.status, "success_graph_seed");
+  EXPECT_NE(res.message.find("not optimised"), std::string::npos);
+  res = f.planner->plan(jointRequest(1.0));
+  ASSERT_TRUE(res.success);
+  EXPECT_EQ(res.status, "success");
+  EXPECT_TRUE(res.message.empty());
+}
+
+TEST(CuroboClient, AFailedWorldUpdateStopsPlanningOnTheStaleWorld)
+{
+  Fixture f;
+  mp::WorldGeometryBox b;
+  b.id = "crate";
+  b.orientation_w = 1.0;
+  mp::WorldGeometryUpdate small;
+  small.boxes.push_back(b);
+  ASSERT_TRUE(f.planner->setWorld(small));
+  EXPECT_TRUE(f.planner->plan(jointRequest(1.0)).success);
+
+  mp::WorldGeometryUpdate many;      // the stub (like the node's obstacle cache) refuses 5 or more boxes
+  many.boxes.assign(6, b);
+  std::string message;
+  EXPECT_FALSE(f.planner->setWorld(many, &message));
+  // the node still holds the previous world: nothing may plan, solve or check against it
+  const auto plan = f.planner->plan(jointRequest(1.0));
+  EXPECT_FALSE(plan.success);
+  EXPECT_EQ(plan.failure_reason_code, "world_stale");
+  EXPECT_NE(plan.message.find("too many boxes"), std::string::npos);
+  mp::IkRequest ik;
+  ik.target_pose = {0.4, 0.0, 0.4, 0.0, 0.0, 0.0, 1.0};
+  EXPECT_EQ(f.planner->ik(ik).failure_reason_code, "world_stale");
+  mp::CollisionRequest c;
+  c.joint_values = {0.5, 0.0};
+  EXPECT_EQ(f.planner->collision(c).failure_reason_code, "world_stale");
+
+  ASSERT_TRUE(f.planner->setWorld(small));          // a successful update makes the world current again
+  EXPECT_TRUE(f.planner->plan(jointRequest(1.0)).success);
+  EXPECT_FALSE(f.planner->setWorld(many));
+  ASSERT_TRUE(f.planner->clearWorld());             // so does a clear
+  EXPECT_TRUE(f.planner->plan(jointRequest(1.0)).success);
 }
 
 TEST(CuroboClient, WorldCarriesBoxesAndTransformedPoints)

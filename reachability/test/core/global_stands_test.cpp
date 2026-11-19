@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
+#include <numeric>
 #include <set>
 
 #include "reachability/core/builder.hpp"
@@ -88,18 +91,39 @@ TEST(GlobalStands, AWallTooWideForOneStandNeedsSeveralAndEveryTargetIsCovered)
   }
 }
 
-TEST(GlobalStands, StandCountIsWithinTheSetCoverBoundOfTheExistingBoundedSearch)
+TEST(GlobalStands, StandCountIsWithinTheHarmonicBoundOfTheTrueOptimum)
 {
-  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}));
-  const Stand start{Eigen::Vector2d(0.0, -3.5), 0.0};
+  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}), false);
+  const auto all = makeCandidateStands(r);
+  std::vector<CandidateStand> cands;   // a spread of at most 14 candidates: small enough to brute-force
+  for (size_t i = 0; i < all.size(); i += all.size() / 14 + 1) {cands.push_back(all[i]);}
+  ASSERT_LE(cands.size(), 14U);
+  const auto heights = heightRange(r.lift_min, r.lift_max, r.lift_step);
+  std::vector<unsigned> mask(cands.size(), 0U);
+  unsigned coverable = 0U;
+  for (size_t c = 0; c < cands.size(); ++c) {
+    const auto reach = reachableByHeight(sharedMap(), r.targets_world, cands[c].stand.arm_xy.x(),
+        cands[c].stand.arm_xy.y(), heights, r.arm_mount_offset_z);
+    for (size_t t = 0; t < reach.size(); ++t) {
+      if (std::count(reach[t].begin(), reach[t].end(), true) > 0) {mask[c] |= 1U << t;}
+    }
+    coverable |= mask[c];
+  }
+  // the fewest candidates covering everything coverable, by trying every subset
+  size_t opt = cands.size();
+  for (unsigned sub = 1; sub < (1U << cands.size()); ++sub) {
+    unsigned u = 0U;
+    for (size_t c = 0; c < cands.size(); ++c) {if (sub >> c & 1U) {u |= mask[c];}}
+    if (u == coverable) {opt = std::min(opt, static_cast<size_t>(__builtin_popcount(sub)));}
+  }
+  ASSERT_GE(opt, 2U);   // otherwise the instance says nothing about the bound
   StandSelectionOptions o;
-  const auto sel = selectStands(sharedMap(), r, start, o);
-  const auto ref = planStands(sharedMap(), r, start, 32, StandStrategy::SetCover);
-  ASSERT_TRUE(sel.success);
-  const double n = static_cast<double>(r.targets_world.size());
+  o.margin_penalty = 0.0;   // plain greedy by count: the classical bound applies as is
+  const auto sel = selectStands(sharedMap(), r, cands, std::nullopt, o);
+  EXPECT_GE(sel.stands.size(), opt);
   double h = 0.0;
-  for (int k = 1; k <= static_cast<int>(n); ++k) {h += 1.0 / k;}
-  EXPECT_LE(static_cast<double>(sel.stands.size()), (1.0 + o.margin_penalty) * h * static_cast<double>(ref.stands.size()));
+  for (int k = 1; k <= __builtin_popcount(coverable); ++k) {h += 1.0 / k;}
+  EXPECT_LE(static_cast<double>(sel.stands.size()), h * static_cast<double>(opt));
   EXPECT_LE(sel.stands.size(), sel.greedy_stands);
 }
 
@@ -230,6 +254,7 @@ TEST(GlobalStands, ATinyTimeBudgetStillGivesACompleteTourNoLongerThanTheCoverOrd
   o.time_budget_s = 1e-9;
   const auto sel = selectStands(sharedMap(), r, Stand{Eigen::Vector2d(0.0, 4.0), 0.0}, o);
   ASSERT_TRUE(sel.success);
+  EXPECT_TRUE(sel.tour_budget_hit);   // the clock really stopped the 2-opt
   expectPartition(sel, r.targets_world.size());
   EXPECT_LE(sel.tour_cost, sel.input_order_cost + 1e-9);
 }
@@ -255,5 +280,90 @@ TEST(GlobalStands, MarginPenaltyKeepsCoverageComplete)
     const auto sel = selectStands(sharedMap(), r, std::nullopt, o);
     EXPECT_TRUE(sel.success) << w;
     expectPartition(sel, r.targets_world.size());
+  }
+}
+
+TEST(GlobalStands, TwoOptShortensATourTheSeedsLeaveLong)
+{
+  // With max_two_opt_passes = 0 the tour is the better of the two seeds (nearest neighbour, cover
+  // order). Somewhere among these starts 2-opt must beat both; check the gain is real by summing
+  // the legs of the returned order independently, and that it never beats the brute-force optimum.
+  const auto r = request(wall({-4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5}, {0.8, 1.4}));
+  size_t improved = 0;
+  for (double x : {0.0, 2.0}) {
+    for (double y = -6.0; y <= 6.0; y += 1.0) {
+      const Stand start{Eigen::Vector2d(x, y), 0.5};
+      StandSelectionOptions seeds;
+      seeds.time_budget_s = 0.0;
+      seeds.max_two_opt_passes = 0;
+      StandSelectionOptions full;
+      full.time_budget_s = 0.0;
+      const auto a = selectStands(sharedMap(), r, start, seeds);
+      const auto b = selectStands(sharedMap(), r, start, full);
+      ASSERT_TRUE(a.success && b.success);
+      ASSERT_EQ(a.stands.size(), b.stands.size());
+      EXPECT_LE(b.tour_cost, a.tour_cost + 1e-9);
+      double legs = 0.0;
+      Stand at = start;
+      std::vector<Stand> stops;
+      for (const auto & s : b.stands) {
+        legs += travelTime(*r.base, at, s.stand);
+        at = s.stand;
+        stops.push_back(s.stand);
+      }
+      EXPECT_NEAR(legs, b.tour_cost, 1e-9);
+      if (stops.size() <= 7) {   // optimum over every visiting order
+        std::vector<size_t> idx(stops.size());
+        std::iota(idx.begin(), idx.end(), size_t{0});
+        double opt = 1e18;
+        do {
+          double c = 0.0;
+          Stand p = start;
+          for (const size_t i : idx) {c += travelTime(*r.base, p, stops[i]); p = stops[i];}
+          opt = std::min(opt, c);
+        } while (std::next_permutation(idx.begin(), idx.end()));
+        EXPECT_GE(b.tour_cost, opt - 1e-9);
+      }
+      if (b.tour_cost < a.tour_cost - 1e-6) {++improved;}
+    }
+  }
+  EXPECT_GT(improved, 0U) << "no start left 2-opt something to improve";
+}
+
+TEST(GlobalStands, TheTourBudgetStartsWithTheTourNotWithTheScoring)
+{
+  auto r = request(wall({-4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5}, {0.8, 1.4}));
+  r.grid_step = 0.1;   // many candidates: scoring is by far the slowest step
+  const Stand start{Eigen::Vector2d(0.0, 4.0), 0.0};
+  StandSelectionOptions off;
+  off.time_budget_s = 0.0;
+  const auto ref = selectStands(sharedMap(), r, start, off);
+  ASSERT_TRUE(ref.success);
+  StandSelectionOptions o;
+  o.time_budget_s = 0.5 * ref.solve_time_s;   // less than scoring takes, far more than 2-opt needs
+  const auto sel = selectStands(sharedMap(), r, start, o);
+  EXPECT_FALSE(sel.tour_budget_hit);
+  EXPECT_EQ(sel.tour_cost, ref.tour_cost);
+}
+
+TEST(GlobalStands, UnusableOptionsAndGridsAreRefusedWithACode)
+{
+  const auto good = request(wall({0.0}, {1.0}));
+  const double inf = std::numeric_limits<double>::infinity();
+  StandSelectionOptions o;
+  o.margin_penalty = inf;   // used to pass the >= 0 check and make every weight NaN
+  EXPECT_EQ(selectStands(sharedMap(), good, std::nullopt, o).code, StandSelectionCode::kInvalidRequest);
+  o.margin_penalty = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(selectStands(sharedMap(), good, std::nullopt, o).code, StandSelectionCode::kInvalidRequest);
+  for (int k = 0; k < 3; ++k) {
+    auto r = good;
+    if (k == 0) {r.max_standoff = inf;}
+    if (k == 1) {r.grid_step = std::numeric_limits<double>::quiet_NaN();}
+    if (k == 2) {r.grid_step = 1e-6;}
+    EXPECT_TRUE(makeCandidateStands(r).empty()) << k;
+    const auto sel = selectStands(sharedMap(), r);
+    EXPECT_EQ(sel.code, StandSelectionCode::kInvalidRequest) << k;
+    EXPECT_FALSE(sel.success);
+    EXPECT_FALSE(sel.message.empty());
   }
 }

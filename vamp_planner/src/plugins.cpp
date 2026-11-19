@@ -29,10 +29,14 @@ std::shared_ptr<VampPlanner> sharedPlanner(
   options.nominal_joint_speed = mp::paramOr(params, "nominal_joint_speed", options.nominal_joint_speed);
   options.simplify = mp::paramOr(params, "simplify", options.simplify);
   options.require_world = mp::paramOr(params, "require_world", options.require_world);
+  options.base_frame = mp::paramOr(params, "base_frame", options.base_frame);
 
   auto planner = context.getOrCreate<VampPlanner>(
     "vamp_planner:" + options.robot,
     [&] {return std::make_shared<VampPlanner>(options, context.logger);});
+  // The planner is shared per robot and the first plugin to ask built it: a later plugin's base_frame
+  // still has to take effect (the scene plugin is the one that needs it).
+  if (params.count("base_frame")) {planner->setBaseFrame(options.base_frame);}
   if (!planner->ok()) {
     std::string robots;
     for (const auto & r : VampPlanner::availableRobots()) {

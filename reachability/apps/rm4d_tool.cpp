@@ -8,6 +8,7 @@
 //   rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W] [--z-step dz] [--y-step dy]
 //                              [--lift-max H] [--mount-z dz] [--min-clearance c] [--grid-step g] [--base-profile profile.yaml]
 //                              [--multi 1 --start-x X --start-y Y --strategy greedy|set_cover|global [--margin-penalty w --time-budget s]]   several stands with travel time
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,9 +31,13 @@ namespace
 std::map<std::string, std::string> options(int argc, char ** argv, int first)
 {
   std::map<std::string, std::string> o;
-  for (int i = first; i + 1 < argc; i += 2) {
+  for (int i = first; i < argc; i += 2) {
     if (std::strncmp(argv[i], "--", 2) != 0) {
       std::fprintf(stderr, "unexpected argument '%s'\n", argv[i]);
+      std::exit(2);
+    }
+    if (i + 1 >= argc) {
+      std::fprintf(stderr, "option '%s' needs a value\n", argv[i]);
       std::exit(2);
     }
     o[argv[i] + 2] = argv[i + 1];
@@ -44,6 +49,17 @@ double num(const std::map<std::string, std::string> & o, const char * k, double 
 {
   const auto it = o.find(k);
   return it == o.end() ? dflt : std::atof(it->second.c_str());
+}
+
+// A loop step: finite and positive, or the tool stops (a zero step would loop forever).
+double step(const std::map<std::string, std::string> & o, const char * k, double dflt)
+{
+  const double v = num(o, k, dflt);
+  if (!std::isfinite(v) || v <= 0.0) {
+    std::fprintf(stderr, "--%s must be a positive number\n", k);
+    std::exit(2);
+  }
+  return v;
 }
 
 int usage()
@@ -93,10 +109,11 @@ int main(int argc, char ** argv)
       return 0;
     }
     if (cmd == "bands") {
-      const Map4D map = loadMap(argv[2]);
-      const auto o = options(argc, argv, 3);
+      const auto o = options(argc, argv, 3);   // bad options are reported before the map is read
       const double wall_x = num(o, "wall-x", 0.6), z0 = num(o, "z-min", 0.1), z1 = num(o, "z-max", 2.5);
-      const double dz = num(o, "z-step", 0.1);
+      const double dz = step(o, "z-step", 0.1);
+      const double dh = step(o, "lift-step", 0.05);
+      const Map4D map = loadMap(argv[2]);
       std::vector<Pose> targets;
       for (double z = z0; z <= z1 + 1e-9; z += dz) {
         Pose T = Pose::Identity();
@@ -105,7 +122,7 @@ int main(int argc, char ** argv)
         targets.push_back(T);
       }
       const auto plan = planLiftBands(map, targets, num(o, "base-x", 0.0), num(o, "base-y", 0.0),
-        heightRange(0.0, num(o, "lift-max", 1.5), num(o, "lift-step", 0.05)), num(o, "mount-z", 0.2));
+        heightRange(0.0, num(o, "lift-max", 1.5), dh), num(o, "mount-z", 0.2));
       std::printf("%zu targets, %zu reachable, %zu band(s):\n", targets.size(), plan.reachable_count, plan.bands.size());
       for (const auto & b : plan.bands) {
         std::printf("  lift %.2f m covers %zu target(s)\n", b.lift_height, b.pose_indices.size());
@@ -116,10 +133,11 @@ int main(int argc, char ** argv)
       return plan.unreachable.empty() ? 0 : 1;
     }
     if (cmd == "station") {
-      const Map4D map = loadMap(argv[2]);
-      const auto o = options(argc, argv, 3);
+      const auto o = options(argc, argv, 3);   // bad options are reported before the map is read
       const double wall_x = num(o, "wall-x", 3.0), z0 = num(o, "z-min", 0.1), z1 = num(o, "z-max", 2.5);
-      const double dz = num(o, "z-step", 0.2), dy = num(o, "y-step", 0.2), half = num(o, "width", 2.0) / 2.0;
+      const double dz = step(o, "z-step", 0.2), dy = step(o, "y-step", 0.2), half = num(o, "width", 2.0) / 2.0;
+      const double grid = step(o, "grid-step", 0.1);
+      const Map4D map = loadMap(argv[2]);
       StationRequest r;
       for (double y = -half; y <= half + 1e-9; y += dy) {
         for (double z = z0; z <= z1 + 1e-9; z += dz) {
@@ -134,7 +152,7 @@ int main(int argc, char ** argv)
       r.lift_max = num(o, "lift-max", 1.5);
       r.arm_mount_offset_z = num(o, "mount-z", 0.2);
       r.min_clearance = num(o, "min-clearance", 0.3);
-      r.grid_step = num(o, "grid-step", 0.1);
+      r.grid_step = grid;
       const auto prof = o.find("base-profile");
       if (prof != o.end()) {
         r.base = loadBaseProfile(prof->second);

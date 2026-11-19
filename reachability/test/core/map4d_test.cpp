@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <random>
 
 #include "reachability/core/map4d.hpp"
@@ -154,4 +155,56 @@ TEST(Map4D, InverseQueryOutsideTheHeightRangeIsEmpty)
   Pose world = T;
   world.translation() = Vec3(1.0, 0.0, 100.0);
   EXPECT_TRUE(map.inverseQuery(world, 0.0).empty());
+}
+
+namespace
+{
+Pose verticalPose(double radius, double azimuth, double z)
+{
+  Pose T = Pose::Identity();   // tool z axis points straight up
+  T.translation() = Vec3(radius * std::cos(azimuth), radius * std::sin(azimuth), z);
+  return T;
+}
+}  // namespace
+
+TEST(Map4D, InverseQueryEmitsEachRingOnceForAVerticalAxis)
+{
+  struct Case {double extent, res;};
+  // default window (inverseQuery used to read a row below the recorded one), 0.1 m cells (it
+  // returned nothing) and a window where two rows passed its filter (every ring came out twice)
+  for (const Case c : {Case{1.8, 0.05}, Case{1.8, 0.1}, Case{1.6, 0.05}}) {
+    MapParams p;
+    p.xy_extent = c.extent;
+    p.resolution = c.res;
+    Map4D map(p);
+    const double radius = 0.62;
+    // the same pose seen from many azimuths: all of them must land in one cell (the rounding noise of
+    // y* used to split them over two rows, which inverseQuery then emitted twice)
+    for (int i = 0; i < 60; ++i) {map.record(verticalPose(radius, 0.7 + 0.1 * i, 0.3));}
+    ASSERT_EQ(map.nonzeroCells(), 1U);
+    const auto cands = map.inverseQuery(verticalPose(radius, 0.7, 0.3), 0.0, 8);
+    EXPECT_EQ(cands.size(), 8U) << "extent " << c.extent << " res " << c.res;   // one ring
+    for (const auto & b : cands) {
+      EXPECT_NEAR(std::hypot(b.x - radius * std::cos(0.7), b.y - radius * std::sin(0.7)), radius, c.res);
+    }
+  }
+}
+
+TEST(Map4D, VerticalAxisReachabilityDoesNotDependOnTheTargetAzimuth)
+{
+  for (const double extent : {1.8, 1.6}) {
+    MapParams p;
+    p.xy_extent = extent;
+    Map4D map(p);
+    std::vector<double> radii;
+    for (double r = 0.31; r < 1.55; r += 0.0731) {radii.push_back(r);}
+    for (const double r : radii) {map.record(verticalPose(r, 0.0, 0.3));}
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> az(-M_PI, M_PI);
+    for (const double r : radii) {
+      for (int i = 0; i < 200; ++i) {
+        EXPECT_TRUE(map.isReachable(verticalPose(r, az(rng), 0.3))) << "extent " << extent << " radius " << r;
+      }
+    }
+  }
 }

@@ -34,8 +34,12 @@ std::shared_ptr<CuroboClientPlanner> sharedClient(
   options.node_name = mp::paramOr(params, "node_name", options.node_name);
   options.wait_for_service_sec = mp::paramOr(params, "wait_for_service_sec", options.wait_for_service_sec);
   options.timeout_sec = mp::paramOr(params, "timeout_sec", options.timeout_sec);
-  return context.getOrCreate<CuroboClientPlanner>(
+  options.base_frame = mp::paramOr(params, "base_frame", options.base_frame);
+  auto client = context.getOrCreate<CuroboClientPlanner>(
     "curobo_client", [&] {return std::make_shared<CuroboClientPlanner>(node, options, context.logger);});
+  // shared client: a later plugin's base_frame still takes effect
+  if (params.count("base_frame")) {client->setBaseFrame(options.base_frame);}
+  return client;
 }
 
 class CuroboPlannerPlugin : public mp::PlannerPlugin

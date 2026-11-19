@@ -9,6 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
+# PCL first: the exported motion_planner_pcd link interface needs the libusb target PCL defines.
+find_package(PCL QUIET COMPONENTS common io)
 find_package(rclcpp REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(core_types REQUIRED)
@@ -33,6 +35,19 @@ add_library(curobo_planner_plugins SHARED src/plugins.cpp)
 target_link_libraries(curobo_planner_plugins PUBLIC curobo_planner pluginlib::pluginlib)
 pluginlib_export_plugin_description_file(motion_planner plugins.xml)
 install(TARGETS curobo_planner_plugins ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+
+# Wall-clock benchmark of the node + client path: scripts/planner_benchmark.py in motion_planner_moveit,
+# docs/planner_benchmark.md.
+add_executable(curobo_planner_benchmark src/planner_benchmark.cpp)
+target_link_libraries(curobo_planner_benchmark curobo_planner)
+install(TARGETS curobo_planner_benchmark RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+# One-shot loader: a point-cloud file into the cuRobo node's world (sim passes, next to world_model_loader).
+if(PCL_FOUND AND TARGET motion_planner::motion_planner_pcd)
+  add_executable(curobo_world_loader src/curobo_world_loader_node.cpp)
+  target_link_libraries(curobo_world_loader curobo_planner motion_planner::motion_planner_pcd ${PCL_LIBRARIES})
+  install(TARGETS curobo_world_loader RUNTIME DESTINATION lib/${PROJECT_NAME})
+endif()
 
 install(TARGETS curobo_planner EXPORT export_curobo_planner
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)

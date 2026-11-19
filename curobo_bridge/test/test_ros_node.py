@@ -27,25 +27,34 @@ class FakePlanner:
         self.world = None
         self.cleared = 0
         self.pose_args = None
+        self.raises = {}     # method name -> exception to raise from it (a cuRobo / CUDA failure)
+
+    def _maybe_raise(self, name):
+        if name in self.raises:
+            raise self.raises[name]
 
     def plan_joint(self, start, goal):
+        self._maybe_raise('plan_joint')
         if len(start) != 2:
             return PlanResult(failure_reason_code='invalid_request', failure_stage='precheck',
                               message='bad length')
-        return PlanResult(success=True, joint_names=self.joint_names,
+        return PlanResult(success=True, joint_names=self.joint_names, route='graph_seed',
                           positions=[list(start), [0.5, 0.5], list(goal)], dt=0.1, planning_time_s=0.25)
 
     def plan_pose(self, start, position, quat_wxyz):
+        self._maybe_raise('plan_pose')
         self.pose_args = (tuple(position), tuple(quat_wxyz))
         return PlanResult(success=True, joint_names=self.joint_names, positions=[list(start)], dt=0.1)
 
     def solve_ik(self, position, quat_wxyz, seed=None):
+        self._maybe_raise('solve_ik')
         self.ik_args = (tuple(position), tuple(quat_wxyz), list(seed or []))
         if position[0] > 5.0:
             return IkResult(failure_reason_code='no_solution', failure_stage='planning', message='none')
         return IkResult(success=True, joint_names=self.joint_names, joints=[0.1, 0.2], position_error=1e-4)
 
     def check_states(self, states):
+        self._maybe_raise('check_states')
         for q in states:
             if len(q) != 2:
                 raise ValueError('wrong joint count')
@@ -63,14 +72,17 @@ class FakePlanner:
             return (2, 2, 2)
 
     def set_esdf(self, field, center=None):
+        self._maybe_raise('set_esdf')
         self.esdf_args = (field.copy(), tuple(center))
         return 1
 
     def clear_world(self):
+        self._maybe_raise('clear_world')
         self.cleared += 1
         self.world = None
 
     def set_world(self, boxes=(), points=None, point_voxel=0.05):
+        self._maybe_raise('set_world')
         if len(boxes) > self.max_boxes:
             raise ValueError('too many boxes')
         self.world = (list(boxes), points, point_voxel)
@@ -117,6 +129,7 @@ def test_plan_joint_returns_a_timed_trajectory(harness):
     assert times == pytest.approx([0.0, 0.1, 0.2])
     assert list(r.trajectory.points[-1].positions) == [1.0, 1.0]
     assert r.planning_time_s == pytest.approx(0.25)
+    assert r.route == 'graph_seed'      # an unoptimised path must not look like an ordinary success
 
 
 def test_failures_keep_their_structure(harness):
@@ -290,3 +303,56 @@ def test_set_esdf_reshapes_x_major_and_checks_the_grid(harness):
     assert 'expected 8' in call(msgs.SetEsdf, 'set_esdf', bad).message        # wrong length
     bad = msgs.SetEsdf.Request(nx=2, ny=2, nz=2, voxel_size=0.2, center=[0.0] * 3, distance=[0.0] * 8)
     assert not call(msgs.SetEsdf, 'set_esdf', bad).success                    # wrong voxel size
+
+
+def test_ik_weights_parameter_keeps_zeros():
+    from curobo_bridge.ros_node import ik_weights_from_parameter
+    assert ik_weights_from_parameter(None) is None and ik_weights_from_parameter([]) is None
+    assert ik_weights_from_parameter([1.0, 0.0, 36.0]) == [1.0, 0.0, 36.0]   # a zero ignores the joint
+
+
+def test_declared_ik_weights_reach_the_planner_unfiltered():
+    """The node must hand a zero weight on to the planner (it used to drop it, leaving a vector one
+    entry short of the joint count)."""
+    from rclpy.parameter import Parameter
+    import curobo_bridge.ros_node as ros_node
+    seen = {}
+
+    class Stub:
+        dimension, tool_frames = 3, ['t']
+
+        def __init__(self, robot, **kw):
+            seen.update(kw)
+
+    rclpy.init()
+    original, ros_node.CuroboPlanner = ros_node.CuroboPlanner, Stub
+    try:
+        node = CuroboPlannerNode(parameter_overrides=[Parameter('ik_weights', value=[1.0, 0.0, 2.0])])
+        node.destroy_node()
+    finally:
+        ros_node.CuroboPlanner = original
+        rclpy.shutdown()
+    assert seen['ik_weights'] == [1.0, 0.0, 2.0]
+
+
+@pytest.mark.parametrize('srv,name,request_factory,method', [
+    (msgs.PlanJoint, 'plan_joint', lambda: msgs.PlanJoint.Request(start=[0.0, 0.0], goal=[1.0, 1.0]), 'plan_joint'),
+    (msgs.PlanPose, 'plan_pose', lambda: msgs.PlanPose.Request(start=[0.0, 0.0]), 'plan_pose'),
+    (msgs.SolveIk, 'solve_ik', lambda: msgs.SolveIk.Request(), 'solve_ik'),
+    (msgs.CheckMotion, 'check_motion', lambda: msgs.CheckMotion.Request(states=_states([0.0, 0.0])), 'check_states'),
+    (msgs.SetWorld, 'set_world', lambda: msgs.SetWorld.Request(boxes=[Box()]), 'set_world'),
+    (msgs.SetWorld, 'set_world', lambda: msgs.SetWorld.Request(), 'clear_world'),
+    (msgs.SetEsdf, 'set_esdf', lambda: msgs.SetEsdf.Request(nx=2, ny=2, nz=2, voxel_size=0.1,
+                                                            center=[0.0] * 3, distance=[0.0] * 8), 'set_esdf'),
+])
+def test_a_planner_exception_becomes_a_failed_response_and_the_node_survives(
+        harness, srv, name, request_factory, method):
+    fake, call = harness
+    fake.raises[method] = RuntimeError('CUDA error: illegal memory access')
+    r = call(srv, name, request_factory())
+    assert not r.success and 'CUDA error' in r.message
+    if hasattr(r, 'failure_reason_code'):
+        assert r.failure_reason_code == 'internal_error'
+    fake.raises.clear()           # the node still answers afterwards
+    r = call(msgs.PlanJoint, 'plan_joint', msgs.PlanJoint.Request(start=[0.0, 0.0], goal=[1.0, 1.0]))
+    assert r.success

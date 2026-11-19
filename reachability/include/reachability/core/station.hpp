@@ -6,7 +6,9 @@
 // is to the wall's work area.
 #pragma once
 
+#include <cstddef>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "reachability/core/base_model.hpp"
@@ -52,6 +54,15 @@ struct Station
   /// A station was found and it reaches every target.
   bool complete() const {return found && plan.unreachable.empty();}
 };
+
+/// Most search-grid points (standoff rings x positions along the wall) a request may ask for.
+constexpr size_t kMaxGridPoints = 250000;
+
+/// Empty when the request's search grid is usable: finite, positive `grid_step`, finite standoff
+/// and margins, and at most kMaxGridPoints points. Otherwise the reason. chooseStation,
+/// makeCandidateStands and selectStands(request, ...) refuse a request with a problem instead of
+/// looping on it (an infinite max_standoff) or running out of memory (a tiny grid_step).
+std::string stationGridProblem(const StationRequest & request);
 
 /// Best station on the free side of the wall. `found` is false only if nothing reaches any target.
 Station chooseStation(const Map4D & map, const StationRequest & request);

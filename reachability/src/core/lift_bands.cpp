@@ -9,7 +9,11 @@ namespace reachability
 std::vector<double> heightRange(double lo, double hi, double step)
 {
   std::vector<double> out;
-  if (step <= 0.0 || hi < lo) {
+  // Non-finite input or a huge count would loop (or overflow the int below): no heights.
+  constexpr double kMaxHeights = 100000.0;
+  if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(step) || step <= 0.0 || hi < lo ||
+    !((hi - lo) / step < kMaxHeights))
+  {
     return out;
   }
   const int n = static_cast<int>(std::floor((hi - lo) / step + 1e-9));

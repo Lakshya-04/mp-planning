@@ -49,7 +49,9 @@ CellKey Map4D::keyOf(const Pose & T) const
   }
   const double c = std::cos(phi), sn = std::sin(phi);
   const double xs = c * p.x() + sn * p.y();
-  const double ys = -sn * p.x() + c * p.y();
+  // For a vertical axis phi is the position's own azimuth, so y* is exactly 0; computing it as
+  // -sn*px + c*py leaves ~1e-16 of noise that picks the cell on either side of y* = 0.
+  const double ys = s > 1e-3 ? -sn * p.x() + c * p.y() : 0.0;
 
   CellKey key;
   key.ix = static_cast<int>(std::floor((xs + params_.xy_extent) / params_.resolution));
@@ -101,9 +103,14 @@ std::vector<BaseCandidate> Map4D::inverseQuery(
   const double phi = vertical ? 0.0 : std::atan2(axis.y(), axis.x());
   const double c = std::cos(phi), sn = std::sin(phi);
 
+  // keyOf puts a vertical axis at y* = 0, i.e. in this one row of cells.
+  const int iy_vertical = static_cast<int>(std::floor((0.0 + params_.xy_extent) / params_.resolution));
   for (int ix = 0; ix < nxy_; ++ix) {
     const double xs = -params_.xy_extent + (ix + 0.5) * params_.resolution;
     for (int iy = 0; iy < nxy_; ++iy) {
+      if (vertical && iy != iy_vertical) {
+        continue;
+      }
       const uint8_t count = cells_[index(iz, itheta, ix, iy)];
       if (count == 0) {
         continue;
@@ -115,9 +122,6 @@ std::vector<BaseCandidate> Map4D::inverseQuery(
       } else {
         // No azimuth: any direction works, so only the radius matters. Sample a ring, once per
         // radius (the canonical frame for a vertical axis puts the position on +x: y* = 0).
-        if (std::abs(ys) > 0.5 * params_.resolution) {
-          continue;
-        }
         const double r = xs;
         for (int k = 0; k < ring_samples; ++k) {
           const double a = 2.0 * M_PI * k / ring_samples;

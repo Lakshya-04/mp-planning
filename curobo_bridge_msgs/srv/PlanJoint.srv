@@ -3,10 +3,12 @@ float64[] start
 float64[] goal
 ---
 bool success
-# none | invalid_request | no_path | unavailable
+# none | invalid_request | no_path | unavailable | internal_error
 string failure_reason_code
 # none | precheck | planning
 string failure_stage
 string message
+# how the trajectory was made: trajopt (optimised) | graph_seed (validated graph path, NOT optimised) | empty on failure
+string route
 trajectory_msgs/JointTrajectory trajectory
 float64 planning_time_s

@@ -39,7 +39,8 @@ LiftBandPlan planLiftBands(
   const Map4D & map, const std::vector<Pose> & targets_world, double base_x, double base_y,
   const std::vector<double> & candidate_heights, double arm_mount_offset_z);
 
-/// Evenly spaced candidate heights, inclusive of both ends.
+/// Evenly spaced candidate heights, inclusive of both ends. Empty for a non-finite argument,
+/// step <= 0, hi < lo or more than 100000 heights.
 std::vector<double> heightRange(double lo, double hi, double step);
 
 }  // namespace reachability

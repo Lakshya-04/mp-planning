@@ -23,8 +23,46 @@ def test_voxelize_only_grows_when_capped():
         assert any(np.all(np.abs(p - np.array(b.center)) <= edge / 2 + 1e-9) for b in boxes)
 
 
+def test_voxelize_with_no_room_is_an_error_not_a_giant_cube():
+    pts = np.random.default_rng(0).uniform(0, 1, size=(50, 3))
+    with pytest.raises(ValueError):
+        voxelize_points(pts, voxel=0.05, max_boxes=0)       # the explicit boxes already fill the cache
+    with pytest.raises(ValueError):
+        voxelize_points(pts, voxel=0.05, max_boxes=-3)
+
+
+def test_voxelize_never_returns_more_than_the_cap_or_an_oversized_cube():
+    # spread over a range no 12 doublings of 0.05 m can cover with one cell per point
+    pts = np.array([[0.0, 0.0, 0.0], [1e6, 0.0, 0.0], [-1e6, 0.0, 0.0]])
+    with pytest.raises(ValueError):
+        voxelize_points(pts, voxel=0.05, max_boxes=1)
+    boxes = voxelize_points(np.random.default_rng(1).uniform(0, 1, size=(500, 3)), voxel=0.05, max_boxes=1)
+    assert len(boxes) == 1 and boxes[0].size[0] <= 0.05 * 2 ** 12    # fits at a size whose cell count was checked
+    assert np.all(np.abs(np.array(boxes[0].center) - 0.5) <= boxes[0].size[0])
+
+
 def test_voxelize_empty():
     assert voxelize_points(np.zeros((0, 3))) == []
+
+
+def test_resolve_ik_weights_validates_length_and_keeps_zeros():
+    from curobo_bridge.planner import resolve_ik_weights
+    names = ['lift', 'a', 'b']
+    assert resolve_ik_weights(names, [36.0, 1.0, 0.0]) == [36.0, 1.0, 0.0]     # zero = ignore the joint
+    assert resolve_ik_weights(names, None, ['lift'], 6.0) == [36.0, 1.0, 1.0]
+    assert resolve_ik_weights(names, []) == [1.0, 1.0, 1.0]
+    with pytest.raises(ValueError, match='3 joints'):
+        resolve_ik_weights(names, [1.0, 1.0])                                  # the old node dropped zeros: 2 for 3
+    with pytest.raises(ValueError, match='negative'):
+        resolve_ik_weights(names, [1.0, -1.0, 1.0])
+    with pytest.raises(ValueError, match='not joints'):
+        resolve_ik_weights(names, None, ['lft'])                               # a typo must not be ignored silently
+
+
+def test_route_is_explicit():
+    from curobo_bridge.planner import route_from_source
+    assert route_from_source('trajopt') == 'trajopt' and route_from_source(None) == 'trajopt'
+    assert route_from_source('graph_fit') == 'graph_seed' and route_from_source('graph_seed') == 'graph_seed'
 
 
 def test_plan_result_duration():
@@ -101,6 +139,42 @@ def test_points_become_obstacles_and_too_many_boxes_are_an_error(planner):
     too_many = [Box(f'b{i}', (2.0, 2.0, 2.0), (0.01, 0.01, 0.01)) for i in range(planner.max_boxes + 1)]
     with pytest.raises(ValueError):
         planner.set_world(too_many)
+    planner.clear_world()
+
+
+def _goal_near(planner):
+    return list(np.array(planner.default_joint_state) + np.array([0.4, -0.2, 0.2, 0.1, 0.0, 0.2, 0.0]))
+
+
+@needs_gpu
+def test_clear_world_really_removes_the_cuboids(planner):
+    """cuRobo's cache keeps the previous voxel layer when a scene omits it (see _voxel_scene); cuboids must
+    not behave the same way: after clear_world a blocking box may not linger."""
+    start = planner.default_joint_state
+    goal = _goal_near(planner)
+    assert planner.check_states([start]) == [True] and planner.plan_joint(start, goal).success
+    planner.set_world([Box('swallow', (0.0, 0.0, 0.4), (3.0, 3.0, 3.0))])
+    assert planner.check_states([start]) == [False]
+    assert not planner.plan_joint(start, goal).success
+    planner.clear_world()
+    assert planner.check_states([start]) == [True]
+    r = planner.plan_joint(start, goal)
+    assert r.success, r.message
+
+
+@needs_gpu
+@pytest.mark.parametrize('blocker_first', [True, False])
+def test_a_smaller_world_drops_the_cuboids_it_omits(planner, blocker_first):
+    start = planner.default_joint_state
+    goal = _goal_near(planner)
+    blocker = Box('swallow', (0.0, 0.0, 0.4), (3.0, 3.0, 3.0))
+    far = Box('far', (3.0, 3.0, 3.0), (0.1, 0.1, 0.1))        # nowhere near the arm
+    planner.set_world([blocker, far] if blocker_first else [far, blocker])
+    assert planner.check_states([start]) == [False]
+    assert planner.set_world([far]) == 1                       # the blocker is no longer in the scene
+    assert planner.check_states([start]) == [True]
+    r = planner.plan_joint(start, goal)
+    assert r.success, r.message
     planner.clear_world()
 
 
@@ -197,3 +271,114 @@ def test_esdf_needs_a_configured_grid(planner):
     with pytest.raises(ValueError):
         planner.set_world(esdf=np.zeros((4, 4, 4), dtype=np.float32))
 
+
+
+# ---- trajectory-optimisation fallback ---------------------------------------------------------
+class _FakeCfg:
+    always_run_trajopt = True
+    run_trajopt_on_graph_seed = True
+
+
+class _FakeResult:
+    def __init__(self, ok, source='trajopt'):
+        self.success = torch.tensor([[ok]])
+        self.trajectory_source = source
+        self.total_time = 0.25
+        self._plan = type('P', (), {'position': torch.zeros(1, 1, 3, 2), 'joint_names': ['a', 'b']})()
+
+    def get_interpolated_plan(self):
+        return self._plan
+
+
+class _FakeMotionPlanner:
+    """plan_cspace that 'fails trajectory optimisation' (the default config) and succeeds from a graph seed
+    when the two bypass switches are off; records the calls and the config seen."""
+    joint_names = ['a', 'b']
+    config = _FakeCfg()
+
+    def __init__(self, seed_ok=True):
+        self.calls, self.seed_ok = [], seed_ok
+        self.trajopt_solver = type('T', (), {'config': type('C', (), {'interpolation_dt': 0.025})()})()
+
+    def plan_cspace(self, goal, cur, max_attempts=20, enable_graph_attempt=1, finetune_attempts=1):
+        bypass = not self.config.always_run_trajopt and not self.config.run_trajopt_on_graph_seed
+        self.calls.append((max_attempts, enable_graph_attempt, bypass))
+        if bypass and self.seed_ok:
+            return _FakeResult(True, 'graph_fit')
+        return _FakeResult(False)
+
+
+def _fake_planner(seed_fallback, seed_ok=True, enable_trajopt=True):
+    from curobo_bridge.planner import CuroboPlanner
+    p = CuroboPlanner.__new__(CuroboPlanner)
+    p._planner = _FakeMotionPlanner(seed_ok)
+    _FakeMotionPlanner.config = _FakeCfg()
+    p._seed_fallback = seed_fallback and enable_trajopt
+    p._fallback_attempts = 6
+    p._max_attempts = 20
+    p._enable_graph_attempt = 1
+    p._torch = torch
+    p._check_state = lambda q, what: None
+    p._state = lambda q: None
+    return p
+
+
+def test_trajopt_failure_falls_back_to_the_validated_graph_seed():
+    p = _fake_planner(seed_fallback=True)
+    r = p.plan_joint([0.0, 0.0], [1.0, 1.0])
+    assert r.success and r.route == 'graph_seed'
+    assert 'not optimised' in r.message
+    assert r.planning_time_s == pytest.approx(0.5)            # the failed pass and the fallback both count
+    assert p._planner.calls == [(20, 1, False), (6, 0, True)]
+    cfg = p._planner.config                                     # the switches are put back
+    assert cfg.always_run_trajopt and cfg.run_trajopt_on_graph_seed
+
+
+def test_fallback_can_be_turned_off_and_failure_stays_a_failure():
+    off = _fake_planner(seed_fallback=False)
+    r = off.plan_joint([0.0, 0.0], [1.0, 1.0])
+    assert not r.success and r.route == '' and len(off._planner.calls) == 1
+    no_seed = _fake_planner(seed_fallback=True, seed_ok=False)
+    r = no_seed.plan_joint([0.0, 0.0], [1.0, 1.0])
+    assert not r.success and r.failure_reason_code == 'no_path' and len(no_seed._planner.calls) == 2
+    assert no_seed._planner.config.always_run_trajopt          # restored on the failing path too
+    seed_only = _fake_planner(seed_fallback=True, enable_trajopt=False)
+    assert len(seed_only._planner.calls) == 0 and not seed_only.plan_joint([0.0, 0.0], [1.0, 1.0]).success
+    assert len(seed_only._planner.calls) == 1                  # enable_trajopt=False is already the seed route
+
+
+@needs_gpu
+def test_fallback_returns_a_valid_seed_when_trajopt_fails_on_the_real_planner(planner):
+    """Force 'trajectory optimisation fails' (every default-config plan_cspace returns no trajectory) and
+    check the real graph-seed route gives a trajectory that cuRobo's own checker accepts."""
+    mp = planner._planner
+    real = mp.plan_cspace
+
+    def failing_when_default(goal, cur, **kw):
+        if mp.config.always_run_trajopt:
+            return None
+        return real(goal, cur, **kw)
+
+    planner._seed_fallback, mp.plan_cspace = True, failing_when_default
+    try:
+        start = planner.default_joint_state
+        goal = list(np.array(start) + np.array([0.4, -0.2, 0.2, 0.1, 0.0, 0.2, 0.0]))
+        r = planner.plan_joint(start, goal)
+    finally:
+        mp.plan_cspace = real
+    assert r.success, r.message
+    assert r.route == 'graph_seed'
+    assert np.allclose(r.positions[-1], goal, atol=2e-2)
+    assert planner.check_motion(r.positions, max_step=0.1)
+    assert mp.config.always_run_trajopt and mp.config.run_trajopt_on_graph_seed
+    normal = planner.plan_joint(start, goal)
+    assert normal.success and normal.route == 'trajopt'
+
+
+def test_check_motion_with_a_tiny_step_is_refused_not_unbounded():
+    from curobo_bridge.planner import CuroboPlanner
+    p = CuroboPlanner.__new__(CuroboPlanner)
+    p.check_states = lambda states: [True] * len(states)
+    with pytest.raises(ValueError, match='max_step'):
+        p.check_motion([[0.0, 0.0], [1.0, 1.0]], max_step=1e-9)
+    assert p.check_motion([[0.0, 0.0], [1.0, 1.0]], max_step=0.1)

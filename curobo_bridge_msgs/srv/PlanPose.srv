@@ -6,5 +6,7 @@ bool success
 string failure_reason_code
 string failure_stage
 string message
+# how the trajectory was made: trajopt (optimised) | graph_seed (validated graph path, NOT optimised) | empty on failure
+string route
 trajectory_msgs/JointTrajectory trajectory
 float64 planning_time_s

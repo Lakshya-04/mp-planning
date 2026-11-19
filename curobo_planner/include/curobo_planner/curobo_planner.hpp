@@ -22,7 +22,10 @@ struct Options
 {
   std::string node_name{"/curobo_planner"};  ///< Name of the cuRobo planner node (its services' prefix).
   double wait_for_service_sec{5.0};
-  double timeout_sec{30.0};                  ///< Per-call deadline; the first plan can be slow.
+  /// Per-call deadline. Above the worst case measured for one plan_joint on the node (first pass up to
+  /// 20 attempts, 6 to 33 s, plus the 0.3 to 0.4 s seed fallback; docs/planner_benchmark.md). A shorter
+  /// deadline abandons a plan the single-threaded node still finishes, and later calls queue behind it.
+  double timeout_sec{45.0};
   /// The robot's base frame. When set, setWorld() / updateWorldGeometry() reject an update whose
   /// frame_id is set to anything else (the node cannot transform it). Empty: the update's frame is
   /// trusted to be the base frame.
@@ -39,8 +42,14 @@ public:
 
   std::string name() const override {return "curobo";}
 
+  /// Sets Options::base_frame after construction (the plugins share one client, built by whichever
+  /// plugin initialised first). Call before planning.
+  void setBaseFrame(const std::string & frame);
+
   /// Replaces the planner's boxes and points (`points_origin` applied). The distance field set by
-  /// setEsdf() is kept unless `world` carries points, which replace it. False on failure.
+  /// setEsdf() is kept unless `world` carries points, which replace it. False on failure; the node
+  /// then still holds its PREVIOUS world (for example when the update exceeds its obstacle cache), so
+  /// plan(), ik() and collision() answer failure_reason_code "world_stale" until an update succeeds.
   bool setWorld(const motion_planner::WorldGeometryUpdate & world, std::string * message = nullptr);
   bool clearWorld(std::string * message = nullptr);
 
@@ -67,6 +76,8 @@ public:
   motion_planner::CollisionResult collision(const motion_planner::CollisionRequest & request) override;
 
 private:
+  bool sendWorld(const motion_planner::WorldGeometryUpdate & world, std::string * message);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

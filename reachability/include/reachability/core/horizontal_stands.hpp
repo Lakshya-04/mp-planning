@@ -11,10 +11,14 @@
 // A patch wider than one stand's reach is covered greedily, like planStands: the station reaching
 // the most remaining targets each round, ties to the stand nearest the base (with a base model and a
 // start) or to the middle of the remaining targets. Base footprint and obstacles are not checked: a
-// stand is any arm base position the map says reaches; the base yaw is free and reported as 0.
+// stand is any arm base position the map says reaches. The base yaw is free: without a base model
+// and start it is reported as 0; with them each stand takes the heading the base arrives with (a
+// strafing base keeps its yaw, one that cannot strafe drives there forward or reversing), so
+// travel times contain no turn the base would not make.
 #pragma once
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "reachability/core/stands.hpp"
@@ -25,7 +29,9 @@ namespace reachability
 struct HorizontalStationRequest
 {
   std::vector<Pose> targets_world;   ///< Tool poses on the surface (tool z axis vertical).
-  double margin{0.5};                ///< Search this far beyond the targets' footprint (m).
+  /// Search at least this far beyond the targets' footprint (m). A station reaches a ring up to the
+  /// map's xy_extent around itself, so the search always extends by max(margin, xy_extent).
+  double margin{0.5};
   double grid_step{0.2};             ///< Search grid over the footprint (m).
   double lift_min{0.0};
   double lift_max{1.5};
@@ -36,8 +42,16 @@ struct HorizontalStationRequest
   std::optional<Stand> from;
 };
 
+enum class HorizontalStandCode
+{
+  kOk,
+  kInvalidRequest,   ///< Bad grid step, margin or lift range; nothing was planned (all targets are in `not_planned`).
+};
+
 struct HorizontalStandPlan
 {
+  HorizontalStandCode code{HorizontalStandCode::kOk};
+  std::string message;   ///< Why the request was refused (empty when kOk).
   StandPlan plan;   ///< `stands` in visiting order, `unreachable` (all targets no stand reaches),
                     ///< `not_planned` (cap hit); station.standoff is 0, station.yaw is 0.
   /// Subset of `plan.unreachable` whose height no lift position can bring within the map's
@@ -46,9 +60,15 @@ struct HorizontalStandPlan
 };
 
 /// False when a target at world height `z` is outside the map's vertical window for every lift
-/// position: no base position helps, the target is out of lift + arm reach.
+/// position: no base position helps, the target is out of lift + arm reach. The window is the map's
+/// real one: z_min up to z_min + nz() * resolution (the map rounds z_max up to whole cells).
 bool heightWithinLiftReach(
   const Map4D & map, double z, double lift_min, double lift_max, double arm_mount_offset_z);
+
+/// Empty when the request's grid and lift range are usable (finite positive grid_step and
+/// lift_step, lift_max >= lift_min, finite margin, at most kMaxGridPoints stations and 100000
+/// lift heights); otherwise the reason. planHorizontalStands reports it as kInvalidRequest.
+std::string horizontalRequestProblem(const Map4D & map, const HorizontalStationRequest & request);
 
 /// Best single station for the patch. `found` is false only if nothing reaches any target.
 Station chooseHorizontalStation(const Map4D & map, const HorizontalStationRequest & request);

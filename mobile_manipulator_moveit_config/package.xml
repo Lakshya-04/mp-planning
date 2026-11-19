@@ -21,6 +21,7 @@
   <!-- test_launch_files.py imports every launch file in the workspace -->
   <test_depend>launch</test_depend>
   <test_depend>launch_ros</test_depend>
+  <test_depend>robot_self_filter</test_depend>
   <test_depend>python3-pytest</test_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_ros_perception</exec_depend>

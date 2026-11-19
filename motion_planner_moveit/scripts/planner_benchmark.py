@@ -12,8 +12,11 @@ run: docs/planner_benchmark.md.
   run-vamp     host, docker (motion-planner:full): VAMP RRT-Connect + simplify (docker/tools/vamp_bench.cpp)
   run-moveit   docker (motion-planner:build with the workspace installed): OMPL RRT-Connect on a MoveIt
                PlanningScene, the `planner_benchmark` executable of motion_planner_moveit
-  run-curobo   inside motion-planner:gpu with --gpus all (needs a working NVIDIA driver)
-  report       CPU: path length, clearance and a markdown table from whichever result files exist
+  run-curobo   inside motion-planner:gpu with --gpus all: cuRobo v0.9.0 in process (CuroboPlanner), one
+               --mode per run: plan_cspace | plan_cspace_fallback | bi_rrt_trajopt | bi_rrt_seed; first call, steady state, VRAM
+  refload      a fixed single-thread numpy workload, repeated: the host-load yardstick (run it under taskset)
+  report       CPU: path length, clearance and a markdown table from whichever result files exist; result
+               files of the same backend/set are passes of one benchmark and give a spread
 
 Reuses docker/tools/bench_spheres.py (FK, sphere model, box distance, VAMP / cuRobo runners). Frames: the
 URDF root frame, metres, radians.
@@ -22,8 +25,11 @@ import argparse
 import json
 import math
 import pathlib
+import os
 import subprocess
 import sys
+import threading
+import time
 
 import numpy as np
 
@@ -133,13 +139,146 @@ def cmd_prepare(a):
 def cmd_run_vamp(a):
     bs.cmd_run_vamp(argparse.Namespace(
         work=a.work, header=a.header, out=a.out, name=a.name, struct=a.struct, image=a.image,
-        skip_compile=a.skip_compile, compile_only=False))
+        skip_compile=a.skip_compile, compile_only=False, cpuset=a.cpuset))
+
+
+# cuRobo v0.9.0 routes through MotionPlanner.plan_cspace (see docs/planner_benchmark.md):
+#   plan_cspace      defaults: attempt 0 is a straight-line seed + trajectory optimisation, graph (PRM) seeding
+#                    from attempt 1 on; cuRobo's own behaviour (CuroboPlanner seed_fallback=False)
+#   plan_cspace_fallback  the same, then, if no trajectory came back, the validated graph seed
+#                    (CuroboPlanner default, what the ROS node uses)
+#   bi_rrt_trajopt   graph_planner_algorithm='rrt' (GPU bidirectional RRT), seeded from attempt 0, then
+#                    trajectory optimisation
+#   bi_rrt_seed      the same RRT seed, retimed and validated, trajectory optimisation skipped
+CUROBO_MODES = {
+    'plan_cspace': {'seed_fallback': False},
+    'plan_cspace_fallback': {},
+    'bi_rrt_trajopt': {'graph_planner_algorithm': 'rrt', 'enable_graph_attempt': 0},
+    'bi_rrt_seed': {'graph_planner_algorithm': 'rrt', 'enable_graph_attempt': 0, 'enable_trajopt': False},
+}
+
+
+class VramPoll(threading.Thread):
+    """Device-wide used memory (torch.cuda.mem_get_info, the nvidia-smi counter) polled every 20 ms, as in
+    docker/tools/eval_curobo_mapper.py: Warp allocates outside torch, so torch's own counters under-report."""
+
+    def __init__(self, torch):
+        super().__init__(daemon=True)
+        self.torch, self.stop_flag = torch, False
+        self.base = self.used()
+        self.peak = self.base
+
+    def used(self):
+        free, total = self.torch.cuda.mem_get_info()
+        return (total - free) / 2**20
+
+    def run(self):
+        while not self.stop_flag:
+            self.peak = max(self.peak, self.used())
+            time.sleep(0.02)
 
 
 def cmd_run_curobo(a):
-    bs.cmd_run_curobo(argparse.Namespace(
-        bridge=a.bridge, problems=str(pathlib.Path(a.work) / 'problems.json'), limit=0, cfg=a.cfg, name=a.name,
-        out=a.out))
+    """One pass of one cuRobo mode over every problem, in process. Timing: wall clock around
+    CuroboPlanner.plan_joint (precheck, host to device, plan_cspace, trajectory back to the host), successful
+    and failed plans both recorded. The first plan_joint after construction + warmup is timed on its own."""
+    import torch
+    sys.path.insert(0, a.bridge)
+    from curobo_bridge.planner import Box, CuroboPlanner
+    kw = CUROBO_MODES[a.mode]
+    doc = json.loads((pathlib.Path(a.work) / 'problems.json').read_text())
+    if a.limit:
+        for sc in doc['scenes']:
+            sc['problems'] = sc['problems'][:a.limit]
+    poll = VramPoll(torch)
+    poll.start()
+    t0 = time.perf_counter()
+    planner = CuroboPlanner(robot=a.cfg, max_boxes=16, warmup=True, **kw)
+    construct_s = time.perf_counter() - t0
+    assert planner.joint_names == doc['robot']['joint_names'], (planner.joint_names, doc['robot']['joint_names'])
+
+    def world(sc):
+        planner.set_world([Box(f'b{i}', tuple(b['center']), tuple(b['size']),
+                               (math.cos(b['yaw'] / 2), 0.0, 0.0, math.sin(b['yaw'] / 2)))
+                           for i, b in enumerate(sc['boxes'])])
+
+    sc0 = doc['scenes'][0]
+    world(sc0)
+    p0 = sc0['problems'][0]
+    t = time.perf_counter()
+    first = planner.plan_joint(p0['start'], p0['goal'])
+    first_call_s = time.perf_counter() - t
+    for pi in range(a.passes):
+        index = a.pass_index + pi
+        out = {'backend': 'curobo', 'set': a.mode, 'mode': a.mode, 'cfg': a.cfg, 'pass': index,
+               'passes_in_this_process': a.passes, 'construct_warmup_s': construct_s, 'first_call_s': first_call_s,
+               'first_call_ok': bool(first.success), 'loadavg_start': os.getloadavg(), 'time_start': time.strftime('%H:%M:%S'),
+               'scenes': []}
+        for sc in doc['scenes']:
+            world(sc)
+            rec = {'id': sc['id'], 'problems': []}
+            probe = 0
+            for p in sc['problems']:
+                valid = [bool(v) for v in planner.check_states([p['start'], p['goal']])]
+                row = {'id': p['id'], 'endpoints_valid': valid}
+                if not all(valid) and not a.plan_invalid:
+                    # cuRobo's own model rejects an endpoint: counted as a failure without calling the planner
+                    # (a plan from or to a state it considers in collision cannot succeed; --verify-invalid N
+                    # plans N such problems per scene to show that, and what they cost)
+                    row.update(success=False, wall_s=0.0, solver_s=0.0, traj_s=0.0, reason='endpoint_invalid',
+                               path=[], planned=False)
+                    if probe < a.verify_invalid:
+                        probe += 1
+                        t = time.perf_counter()
+                        res = planner.plan_joint(p['start'], p['goal'])
+                        row.update(probe_success=bool(res.success), probe_wall_s=time.perf_counter() - t)
+                    rec['problems'].append(row)
+                    continue
+                t = time.perf_counter()
+                res = planner.plan_joint(p['start'], p['goal'])
+                wall = time.perf_counter() - t
+                row.update(success=bool(res.success), wall_s=wall, solver_s=res.planning_time_s, traj_s=res.duration,
+                           reason=res.failure_reason_code, planned=True, route=res.route,
+                           path=np.asarray(res.positions).round(5).tolist() if res.success else [])
+                rec['problems'].append(row)
+            out['scenes'].append(rec)
+            print(f'pass {index} scene {sc["id"]} {sc["family"]}: '
+                  f'{sum(p["success"] for p in rec["problems"])}/{len(rec["problems"])} ok', flush=True)
+        out['loadavg_end'] = os.getloadavg()
+        out['time_end'] = time.strftime('%H:%M:%S')
+        out['vram_base_mib'] = poll.base
+        out['vram_peak_mib'] = poll.peak          # the process so far (construct, warmup and the passes up to this one)
+        out['vram_torch_max_allocated_mib'] = torch.cuda.max_memory_allocated() / 2**20
+        path = pathlib.Path(a.out)
+        if a.passes > 1 or a.pass_index:
+            path = path.with_name(f'{path.stem}_p{index}{path.suffix}')
+        path.write_text(json.dumps(out))
+    poll.stop_flag = True
+    poll.join()
+    planner.close()
+    print(f'{a.mode}: construct+warmup {construct_s:.1f} s, first call {first_call_s:.2f} s, '
+          f'VRAM peak {poll.peak:.0f} MiB (base {poll.base:.0f})')
+
+
+def cmd_refload(a):
+    """Host-load yardstick: a fixed single-thread numpy workload (float64 matmuls, fixed seed), timed `n`
+    times. Run it pinned to the cores the benchmark uses (taskset -c 10-11). Prints one JSON line."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((384, 384))
+    y = rng.standard_normal((384, 384))
+    ms = []
+    for _ in range(a.n):
+        t = time.perf_counter()
+        z = x
+        for _ in range(40):
+            z = (z @ y) * 1e-2
+        ms.append((time.perf_counter() - t) * 1e3)
+    rec = {'label': a.label, 'median_ms': float(np.median(ms)), 'min_ms': min(ms), 'max_ms': max(ms),
+           'loadavg': os.getloadavg(), 'time': time.strftime('%H:%M:%S')}
+    print(json.dumps(rec))
+    if a.out:
+        with open(a.out, 'a') as f:
+            f.write(json.dumps(rec) + '\n')
 
 
 def cmd_run_moveit(a):
@@ -149,7 +288,8 @@ def cmd_run_moveit(a):
     inner = (f'source /opt/ros/jazzy/setup.bash && source /install/setup.bash && '
              f'/install/motion_planner_moveit/lib/motion_planner_moveit/planner_benchmark /robot/{urdf.name} '
              f'/srdf/{srdf.name} {a.group} /work/vamp_problems.txt /out/{out.name} {a.name} {a.timeout}')
-    cmd = ['docker', 'run', '--rm', '--user', f'{__import__("os").getuid()}:{__import__("os").getgid()}',
+    cmd = ['docker', 'run', '--rm', *(['--cpuset-cpus', a.cpuset] if a.cpuset else []),
+           '--user', f'{os.getuid()}:{os.getgid()}',
            '-v', f'{work}:/work', '-v', f'{urdf.parent}:/robot:ro', '-v', f'{srdf.parent}:/srdf:ro',
            '-v', f'{pathlib.Path(a.install).resolve()}:/install:ro', '-v', f'{out.parent}:/out',
            a.image, 'bash', '-c', inner]
@@ -158,24 +298,44 @@ def cmd_run_moveit(a):
 
 
 def _load_jsonl(path):
-    run = {'problems': {}}
+    run = {'problems': {}, 'file': str(path)}
     for ln in pathlib.Path(path).read_text().splitlines():
         o = json.loads(ln)
         if o['type'] == 'header':
             run['backend'], run['set'] = o['backend'], o['set']
+        elif o['type'] == 'first_call':
+            run['first_call_s'] = o['us'] * 1e-6
         elif o['type'] == 'plan':
             o['wall_s'] = o['us'] * 1e-6
+            o['success'] = o.get('success', o.get('ok'))
             run['problems'][o['id']] = o
     return run
 
 
 def _load_curobo(path):
     o = json.loads(pathlib.Path(path).read_text())
-    run = {'backend': 'curobo', 'set': o['set'], 'problems': {}}
+    run = {'backend': 'curobo', 'set': o['set'], 'problems': {}, 'file': str(path),
+           **{k: o[k] for k in o if k not in ('scenes',)}}
     for rs in o['scenes']:
         for p in rs['problems']:
             run['problems'][p['id']] = p
     return run
+
+
+def _label(run):
+    return f"cuRobo {run['set']}" if run['backend'] == 'curobo' else (
+        'cuRobo via node + C++ client' if run['backend'] == 'curobo_node' else run['backend'])
+
+
+def _spread(vals, d=1, unit=''):
+    """'median' or 'median (min-max)' of a list of per-pass numbers."""
+    vals = [v for v in vals if v == v]
+    if not vals:
+        return '-'
+    m = float(np.median(vals))
+    if len(vals) == 1 or max(vals) - min(vals) < 10 ** -d / 2:
+        return f'{m:.{d}f}{unit}'
+    return f'{m:.{d}f} ({min(vals):.{d}f}-{max(vals):.{d}f}){unit}'
 
 
 def cmd_report(a):
@@ -184,11 +344,12 @@ def cmd_report(a):
     arm = RevoluteArm(a.urdf)
     spheres, buf, hops = bs.parse_sets([f'ref={a.spheres}'])['ref']
     ref = bs.SphereModel(arm, spheres, buf, hops, 'ref')
-    runs = []
-    for f in a.results:
-        runs.append(_load_curobo(f) if f.endswith('.json') else _load_jsonl(f))
+    runs = [_load_curobo(f) if f.endswith('.json') else _load_jsonl(f) for f in a.results]
     notes = dict(n.split('=', 1) for n in a.note)
     scenes = {sc['family']: sc for sc in doc['scenes']}
+    groups = {}                      # label -> passes (files of one backend/set are repeats of one benchmark)
+    for r in runs:
+        groups.setdefault(_label(r), []).append(r)
 
     def clearance(path, boxes):
         """Smallest gap (m) between any reference sphere and any box along the dense path; negative = hit."""
@@ -204,34 +365,87 @@ def cmd_report(a):
                     best = min(best, float(d.min()))
         return best
 
-    rows, results = [], []
-    for run in runs:
-        for fam, sc in scenes.items():
-            ps = [run['problems'].get(p['id']) for p in sc['problems']]
-            ps = [p for p in ps if p is not None]
-            if not ps:
+    results = []
+    for label, passes in groups.items():
+        if passes[0]['backend'] == 'curobo_node':
+            continue
+        for fam in [*scenes, 'all']:
+            sps = [p for f, sc in scenes.items() if fam in (f, 'all') for p in sc['problems']]
+            per_pass = []
+            for run in passes:
+                ps = [run['problems'].get(p['id']) for p in sps]
+                ps = [p for p in ps if p is not None]
+                ok = [p for p in ps if p['success']]
+                per_pass.append({'n': len(ps), 'ok': ok, 'valid': sum(all(p['endpoints_valid']) for p in ps),
+                                 'ok_valid': sum(all(p['endpoints_valid']) for p in ok),
+                                 'ms': [p['wall_s'] * 1e3 for p in ok]})
+            if not per_pass[0]['n']:
                 continue
-            ok = [p for p in ps if p['success']]
-            times = [p['wall_s'] * 1e3 for p in ok]
-            lengths = [bs.path_length(p['path']) for p in ok]
-            clear = [clearance(p['path'], sc['boxes']) for p in ok]
+            first = per_pass[0]
+            pooled = [t for pp in per_pass for t in pp['ms']]
+            boxes_of = {p['id']: sc['boxes'] for sc in doc['scenes'] for p in sc['problems']}
+            lengths = [bs.path_length(p['path']) for p in first['ok']]
+            clear = [clearance(p['path'], boxes_of[p['id']]) for p in first['ok']] if fam != 'all' else []
             clear = [c for c in clear if not math.isnan(c)]
-            hits = sum(c < 0 for c in clear)
-            r = {'backend': run['backend'], 'set': run['set'], 'scene': fam, 'n': len(ps), 'ok': len(ok),
-                 'time_ms_median': bs.pct(times, 50), 'time_ms_p95': bs.pct(times, 95),
-                 'path_rad_median': bs.pct(lengths, 50), 'clearance_cm_median': bs.pct(clear, 50) * 100 if clear else float('nan'),
-                 'clearance_cm_min': min(clear) * 100 if clear else float('nan'), 'ref_hits': hits,
-                 'endpoints_invalid': sum(not all(p['endpoints_valid']) for p in ps)}
+            r = {'backend': label, 'scene': fam, 'passes': len(passes), 'n': first['n'],
+                 'ok_per_pass': [len(pp['ok']) for pp in per_pass],
+                 'ok_valid_per_pass': [pp['ok_valid'] for pp in per_pass],
+                 'valid_endpoints': first['valid'],
+                 'time_ms_median_pooled': bs.pct(pooled, 50), 'time_ms_p95_pooled': bs.pct(pooled, 95),
+                 'time_ms_median_per_pass': [bs.pct(pp['ms'], 50) for pp in per_pass],
+                 'time_ms_p95_per_pass': [bs.pct(pp['ms'], 95) for pp in per_pass],
+                 'path_rad_median': bs.pct(lengths, 50),
+                 'traj_s_median': bs.pct([p['traj_s'] for p in first['ok'] if 'traj_s' in p], 50),
+                 'clearance_cm_median': bs.pct(clear, 50) * 100 if clear else float('nan'),
+                 'clearance_cm_min': min(clear) * 100 if clear else float('nan'),
+                 'ref_hits': sum(c < 0 for c in clear)}
             results.append(r)
     (work / 'results.json').write_text(json.dumps(results, indent=1))
+
     f = lambda v, d=1: '-' if v != v else f'{v:.{d}f}'  # noqa: E731
-    out = ['| backend | scene | success | success, valid endpoints | median ms | p95 ms | path rad (median) | clearance cm (median / min) | hits in reference model |',
-           '|---|---|---|---|---|---|---|---|---|']
+    fmt_ok = lambda xs, n: f'{min(xs)}/{n}' if min(xs) == max(xs) else f'{min(xs)}-{max(xs)}/{n}'  # noqa: E731
+    out = ['| backend | scene | passes | success | success, valid endpoints | median ms (pass medians min-max) | p95 ms (pass p95s min-max) | path rad (median) | clearance cm (median / min) | hits in reference model | trajectory duration s (median, cuRobo only) |',
+           '|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
-        out.append(f"| {r['backend']} | {r['scene']} | {r['ok']}/{r['n']} | {r['ok']}/{r['n'] - r['endpoints_invalid']} | {f(r['time_ms_median'])} | {f(r['time_ms_p95'])} | "
-                   f"{f(r['path_rad_median'], 2)} | {f(r['clearance_cm_median'])} / {f(r['clearance_cm_min'])} | {r['ref_hits']} |")
+        out.append(
+            f"| {r['backend']} | {r['scene']} | {r['passes']} | {fmt_ok(r['ok_per_pass'], r['n'])} | "
+            f"{fmt_ok(r['ok_valid_per_pass'], r['valid_endpoints'])} | {_spread(r['time_ms_median_per_pass'])} | "
+            f"{_spread(r['time_ms_p95_per_pass'])} | {f(r['path_rad_median'], 2)} | "
+            f"{f(r['clearance_cm_median'])} / {f(r['clearance_cm_min'])} | "
+            f"{'-' if r['scene'] == 'all' else r['ref_hits']} | {f(r['traj_s_median'], 2)} |")
     for k, v in notes.items():
-        out.append(f'| {k} | not run | - | - | - | - | - | - | {v} |')
+        out.append(f'| {k} | not run | - | - | - | - | - | - | - | {v} | - |')
+
+    # cuRobo: first call, warmup, VRAM, per pass
+    cur = [r for r in runs if r['backend'] == 'curobo']
+    if cur:
+        out += ['', '| cuRobo mode | pass | construct + warmup s | first call s | VRAM peak MiB (device, above base) | torch max allocated MiB | loadavg start / end |',
+                '|---|---|---|---|---|---|---|']
+        for r in cur:
+            out.append(f"| {r['set']} | {r['pass']} | {r['construct_warmup_s']:.1f} | {r['first_call_s']:.2f} | "
+                       f"{r['vram_peak_mib']:.0f} ({r['vram_peak_mib'] - r['vram_base_mib']:.0f}) | "
+                       f"{r['vram_torch_max_allocated_mib']:.0f} | {r['loadavg_start'][0]:.1f} / {r['loadavg_end'][0]:.1f} |")
+
+    # node + C++ client against the in-process runs, same problem ids (passes of the client pooled)
+    for label, nruns in groups.items():
+        if nruns[0]['backend'] != 'curobo_node':
+            continue
+        ids = sorted(set().union(*[set(r['problems']) for r in nruns]))
+        times = [r['problems'][i]['wall_s'] * 1e3 for r in nruns for i in ids if i in r['problems'] and r['problems'][i]['success']]
+        total = sum(len(r['problems']) for r in nruns)
+        node_ms = [r['problems'][i]['node_ms'] for r in nruns for i in ids if i in r['problems'] and r['problems'][i]['success']]
+        traj = [r['problems'][i]['traj_s'] for r in nruns for i in ids if i in r['problems'] and r['problems'][i]['success']]
+        out += ['', f"cuRobo through the ROS node and C++ client: {len(times)}/{total} planned ({len(nruns)} client passes over "
+                    f"{len(ids)} problems); the same problem ids in process, per mode and pass:",
+                '', '| path | n | median ms | p95 ms | min ms | max ms |', '|---|---|---|---|---|---|']
+        out.append(f"| node + client (wall around `plan()`) | {len(times)} | {f(bs.pct(times, 50))} | {f(bs.pct(times, 95))} | "
+                   f"{f(min(times) if times else float('nan'))} | {f(max(times) if times else float('nan'))} |")
+        out.append(f"| node's own `planning_time_ms` (cuRobo `total_time`, whole ms) | {len(node_ms)} | {f(bs.pct(node_ms, 50))} | "
+                   f"{f(bs.pct(node_ms, 95))} | {f(min(node_ms) if node_ms else float('nan'))} | {f(max(node_ms) if node_ms else float('nan'))} |")
+        for r in cur:
+            ts = [r['problems'][i]['wall_s'] * 1e3 for i in ids if i in r['problems'] and r['problems'][i]['success']]
+            out.append(f"| in process, {r['set']} pass {r['pass']} | {len(ts)} | {f(bs.pct(ts, 50))} | "
+                       f"{f(bs.pct(ts, 95))} | {f(min(ts) if ts else float('nan'))} | {f(max(ts) if ts else float('nan'))} |")
     (work / 'results.txt').write_text('\n'.join(out) + '\n')
     print('\n'.join(out))
 
@@ -256,6 +470,7 @@ def main():
     p.add_argument('--name', default='foam')
     p.add_argument('--image', default='motion-planner:full')
     p.add_argument('--skip-compile', action='store_true')
+    p.add_argument('--cpuset', default=None, help='docker --cpuset-cpus, e.g. 10-11')
     p.set_defaults(fn=cmd_run_vamp)
     p = sub.add_parser('run-moveit')
     p.add_argument('--work', required=True)
@@ -267,14 +482,25 @@ def main():
     p.add_argument('--name', default='urdf_meshes')
     p.add_argument('--timeout', type=float, default=5.0)
     p.add_argument('--image', default='motion-planner:build')
+    p.add_argument('--cpuset', default=None, help='docker --cpuset-cpus, e.g. 10-11')
     p.set_defaults(fn=cmd_run_moveit)
     p = sub.add_parser('run-curobo')
     p.add_argument('--work', required=True)
     p.add_argument('--cfg', required=True)
     p.add_argument('--bridge', default='/ws/src/manipulation/curobo_bridge')
     p.add_argument('--out', required=True)
-    p.add_argument('--name', default='foam')
+    p.add_argument('--mode', choices=sorted(CUROBO_MODES), default='plan_cspace')
+    p.add_argument('--pass-index', type=int, default=0, help='number of the first pass')
+    p.add_argument('--passes', type=int, default=1, help='repeat the whole problem set this many times in one process (one warmup)')
+    p.add_argument('--plan-invalid', action='store_true', help='call the planner even when cuRobo rejects an endpoint')
+    p.add_argument('--verify-invalid', type=int, default=0, help='plan N endpoint-invalid problems per scene anyway, record the outcome')
+    p.add_argument('--limit', type=int, default=0, help='only the first N problems of each scene (smoke test)')
     p.set_defaults(fn=cmd_run_curobo)
+    p = sub.add_parser('refload')
+    p.add_argument('--label', default='')
+    p.add_argument('--n', type=int, default=15)
+    p.add_argument('--out', default=None, help='append the JSON line to this file')
+    p.set_defaults(fn=cmd_refload)
     p = sub.add_parser('report')
     p.add_argument('--work', required=True)
     p.add_argument('--urdf', required=True)

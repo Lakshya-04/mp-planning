@@ -33,6 +33,10 @@ class PlanResult:
     positions: List[List[float]] = field(default_factory=list)   # one row per waypoint
     dt: float = 0.0                       # seconds between rows (cuRobo's interpolation step)
     planning_time_s: float = 0.0
+    # how the trajectory was produced: 'trajopt' (cuRobo's trajectory optimisation, the normal route),
+    # 'graph_seed' (trajectory optimisation failed; the graph path, fitted, retimed and validated in
+    # cuRobo's model, was returned as is: see CuroboPlanner seed_fallback), '' when nothing was planned
+    route: str = ''
 
     @property
     def duration(self) -> float:
@@ -62,11 +66,16 @@ def voxelize_points(points: np.ndarray, voxel: float = 0.05, max_boxes: int = 20
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     if len(pts) == 0:
         return []
+    if max_boxes <= 0:
+        raise ValueError(f'no room for point-cloud cubes: the obstacle cache has {max_boxes} free slots')
     size = float(voxel)
-    for _ in range(12):
+    for attempt in range(13):      # the voxel size, then 12 doublings
         cells = np.unique(np.floor(pts / size).astype(np.int64), axis=0)
         if len(cells) <= max_boxes:
             break
+        if attempt == 12:
+            raise ValueError(f'{len(cells)} occupied cells at the coarsest voxel size ({size} m) exceed '
+                             f'the {max_boxes} free obstacle slots')
         size *= 2.0
     return [Box(f'pc_{i}', tuple(((c + 0.5) * size).tolist()), (size, size, size)) for i, c in enumerate(cells)]
 
@@ -128,6 +137,32 @@ def ik_weights_from_joint_types(joint_names: Sequence[str], prismatic_joints: Se
     return [float(factor) ** 2 if name in prismatic else 1.0 for name in joint_names]
 
 
+def route_from_source(source: Optional[str]) -> str:
+    """PlanResult.route from cuRobo's `trajectory_source` ('trajopt', or 'graph_fit' and the like for a
+    graph path returned without optimisation). Only a missing/empty source (a cuRobo build that does not
+    report one, where every plan went through the optimiser) or 'trajopt' is 'trajopt'; any other source
+    is 'graph_seed', so an unoptimised path is never labelled optimised."""
+    return 'trajopt' if source in (None, '', 'trajopt') else 'graph_seed'
+
+
+def resolve_ik_weights(joint_names: Sequence[str], ik_weights: Optional[Sequence[float]],
+                       prismatic_joints: Sequence[str] = (), factor: float = PRISMATIC_IK_FACTOR) -> List[float]:
+    """The IK weights the planner uses: `ik_weights` (one per joint; a zero makes IK ignore that joint)
+    when given, else derived from the joint types. A wrong length or a negative entry is an error here,
+    at construction, instead of a failure of every later IK call. Joint names in `prismatic_joints`
+    that the robot does not have are an error too (a typo would silently weigh nothing)."""
+    unknown = sorted(set(prismatic_joints) - set(joint_names))
+    if unknown:
+        raise ValueError(f'prismatic_joints {unknown} are not joints of this robot {list(joint_names)}')
+    if ik_weights is not None and len(ik_weights):
+        if len(ik_weights) != len(joint_names):
+            raise ValueError(f'ik_weights has {len(ik_weights)} entries for {len(joint_names)} joints')
+        if any(w < 0 for w in ik_weights):
+            raise ValueError('ik_weights must not be negative')
+        return [float(w) for w in ik_weights]
+    return ik_weights_from_joint_types(joint_names, prismatic_joints, factor)
+
+
 def closest_solution(solutions: np.ndarray, success: np.ndarray, seed: Sequence[float],
                      limits: Optional[Tuple[Sequence[float], Sequence[float]]] = None,
                      weights: Optional[Sequence[float]] = None):
@@ -165,13 +200,35 @@ def closest_solution(solutions: np.ndarray, success: np.ndarray, seed: Sequence[
     return None if best is None else (best.tolist(), best_distance, best_row)
 
 
+# upper bound on the states check_motion interpolates (a 1e-9 rad step would build an unbounded list)
+MAX_MOTION_STATES = 100_000
+
+
 class CuroboPlanner:
     """Joint-goal and pose-goal planning with cuRobo v2 on the GPU."""
 
     def __init__(self, robot: str = 'franka.yml', max_goalset: int = 1, max_boxes: int = 256,
                  esdf: Optional[EsdfSpec] = None, warmup: bool = True,
                  prismatic_joints: Sequence[str] = (), ik_prismatic_factor: float = PRISMATIC_IK_FACTOR,
-                 ik_weights: Optional[Sequence[float]] = None):
+                 ik_weights: Optional[Sequence[float]] = None,
+                 graph_planner_algorithm: str = 'prm', enable_trajopt: bool = True,
+                 enable_graph_attempt: int = 1, seed_fallback: bool = True, fallback_attempts: int = 6,
+                 max_attempts: int = 20):
+        """`graph_planner_algorithm` ('prm' or 'rrt', the GPU bidirectional RRT), `enable_trajopt` (False:
+        the graph seed is retimed and validated, trajectory optimisation is skipped) and
+        `enable_graph_attempt` (the plan_cspace attempt at which graph seeding starts; 0 = from the
+        first attempt, 1 = after one straight-line-seed attempt, cuRobo's default) select the
+        plan_cspace route plan_joint takes. The defaults are cuRobo's own and what the node uses.
+
+        `seed_fallback`: when plan_cspace finds no trajectory, plan_joint asks again for up to
+        `fallback_attempts` attempts with trajectory optimisation bypassed: the first graph seed that
+        passes cuRobo's dense validation (collision, limits, dynamics, goal) is returned, reported as
+        `route == 'graph_seed'`. cuRobo's optimiser can fail on a problem whose graph path is valid (it
+        smooths the path into a few millimetres of self-collision in a tight wrist pose; see
+        docs/planner_benchmark.md). Ignored with `enable_trajopt=False`, which is that route already.
+        `max_attempts` is cuRobo's attempt cap for the first (normal) pass, 20 by default; a problem the
+        optimiser cannot solve costs all of them before the fallback runs (6 to 30 s measured), so lower
+        it when the fallback is on and latency matters."""
         import torch
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
         from curobo.types import JointState
@@ -187,13 +244,27 @@ class CuroboPlanner:
         if esdf is not None:
             esdf.shape()   # validate before allocating anything on the GPU
             cache['voxel'] = {'layers': 1, 'dims': list(esdf.dims), 'voxel_size': esdf.voxel_size}
+        extra = {}
+        if graph_planner_algorithm != 'prm':
+            extra['graph_planner_algorithm'] = graph_planner_algorithm
+        if not enable_trajopt:
+            extra['enable_trajopt'] = False
+        self._enable_graph_attempt = enable_graph_attempt
+        self._seed_fallback = bool(seed_fallback) and enable_trajopt
+        self._fallback_attempts = int(fallback_attempts)
+        self._max_attempts = int(max_attempts)
         self._planner = MotionPlanner(MotionPlannerCfg.create(
-            robot=robot, max_goalset=max_goalset, collision_cache=cache))
+            robot=robot, max_goalset=max_goalset, collision_cache=cache, **extra))
+        # IK picks the solution nearest the seed: metres of a prismatic joint must not count as radians.
+        # Resolved (and validated) before the minute-long warmup, which a bad parameter should not cost.
+        try:
+            self._ik_weights = resolve_ik_weights(self.joint_names, ik_weights, prismatic_joints,
+                                                  ik_prismatic_factor)
+        except ValueError:
+            self._planner.destroy()
+            raise
         if warmup:
             self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
-        # IK picks the solution nearest the seed: metres of a prismatic joint must not count as radians.
-        self._ik_weights = (list(ik_weights) if ik_weights else
-                            ik_weights_from_joint_types(self.joint_names, prismatic_joints, ik_prismatic_factor))
         self._world_set = False
         self._boxes: List[Box] = []      # explicit boxes of the current world (kept by set_esdf)
         self._field: Optional[np.ndarray] = None            # current ESDF field (kept by set_world)
@@ -307,8 +378,35 @@ class CuroboPlanner:
         if bad:
             return bad
         cur, tgt = self._state(start), self._state(goal)
-        result = self._planner.plan_cspace(tgt, cur)
-        return self._wrap(result, last=goal)
+        result = self._planner.plan_cspace(tgt, cur, max_attempts=self._max_attempts,
+                                           enable_graph_attempt=self._enable_graph_attempt)
+        out = self._wrap(result, last=goal)
+        if out.success or not self._seed_fallback:
+            return out
+        fallback = self._plan_graph_seed(tgt, cur)
+        if fallback is None:
+            return out
+        fallback.planning_time_s += out.planning_time_s
+        return fallback
+
+    def _plan_graph_seed(self, goal_state, current_state) -> Optional[PlanResult]:
+        """plan_cspace with trajectory optimisation bypassed: graph seeds are evaluated (fitted, retimed,
+        densely validated) and the first valid one is returned. Attempt 0 already uses the graph. None
+        if no seed passes. The two switches live on cuRobo's planner config and are restored."""
+        cfg = self._planner.config
+        saved = (cfg.always_run_trajopt, cfg.run_trajopt_on_graph_seed)
+        cfg.always_run_trajopt, cfg.run_trajopt_on_graph_seed = False, False
+        try:
+            result = self._planner.plan_cspace(goal_state, current_state, max_attempts=self._fallback_attempts,
+                                               enable_graph_attempt=0)
+        finally:
+            cfg.always_run_trajopt, cfg.run_trajopt_on_graph_seed = saved
+        out = self._wrap(result)
+        if not out.success:
+            return None
+        if out.route == 'graph_seed':
+            out.message = 'trajectory optimisation failed; returned the validated graph path (not optimised)'
+        return out
 
     def plan_pose(self, start: Sequence[float], position: Sequence[float],
                   quat_wxyz: Sequence[float] = (1.0, 0.0, 0.0, 0.0)) -> PlanResult:
@@ -379,8 +477,11 @@ class CuroboPlanner:
         if not len(states):
             return []
         t = self._torch
-        mask = self._planner.graph_planner.check_samples_feasibility(
-            t.tensor([list(q) for q in states], device='cuda', dtype=t.float32))
+        gp = self._planner.graph_planner
+        # the PRM planner has the check itself; the GPU RRT planner (graph_planner_algorithm='rrt') keeps it
+        # on its shared resources
+        check = getattr(gp, 'check_samples_feasibility', None) or gp.resources.check_samples_feasibility
+        mask = check(t.tensor([list(q) for q in states], device='cuda', dtype=t.float32))
         # a single state comes back as a 0-d tensor
         return [bool(v) for v in np.atleast_1d(mask.detach().cpu().numpy()).tolist()]
 
@@ -390,9 +491,12 @@ class CuroboPlanner:
         if max_step <= 0:
             raise ValueError('max_step must be positive')
         pts = [np.asarray(q, dtype=np.float64) for q in waypoints]
+        counts = [max(1, int(np.ceil(np.max(np.abs(b - a)) / max_step))) for a, b in zip(pts, pts[1:])]
+        if sum(counts) > MAX_MOTION_STATES:
+            raise ValueError(f'max_step {max_step} would check {sum(counts)} interpolated states '
+                             f'(limit {MAX_MOTION_STATES}): use a larger max_step')
         dense = []
-        for a, b in zip(pts, pts[1:]):
-            n = max(1, int(np.ceil(np.max(np.abs(b - a)) / max_step)))
+        for (a, b), n in zip(zip(pts, pts[1:]), counts):
             dense += [a + (b - a) * k / n for k in range(n)]
         dense.append(pts[-1]) if pts else None
         return all(self.check_states([list(q) for q in dense])) if dense else True
@@ -427,4 +531,5 @@ class CuroboPlanner:
         out.planning_time_s = float(getattr(result, 'total_time', 0.0) or 0.0)
         out.success = True
         out.failure_stage = 'none'
+        out.route = route_from_source(getattr(result, 'trajectory_source', None))
         return out

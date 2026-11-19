@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <set>
 
 #include "reachability/core/builder.hpp"
@@ -114,4 +115,16 @@ TEST(LiftBands, ReachableByHeightMatchesDirectQueries)
     in_base.translation() -= Vec3(0.0, 0.0, heights[h] + 0.2);
     EXPECT_EQ(static_cast<bool>(table[0][h]), sharedMap().isReachable(in_base));
   }
+}
+
+TEST(LiftBands, HeightRangeRefusesNonFiniteAndHugeRanges)
+{
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(heightRange(0.0, 1.0, nan).empty());
+  EXPECT_TRUE(heightRange(0.0, inf, 0.1).empty());
+  EXPECT_TRUE(heightRange(nan, 1.0, 0.1).empty());
+  EXPECT_TRUE(heightRange(0.0, 1.0, 0.0).empty());
+  EXPECT_TRUE(heightRange(0.0, 1.0, 1e-12).empty());   // would be 1e12 heights
+  EXPECT_EQ(heightRange(0.0, 1.0, 0.25).size(), 5U);
 }

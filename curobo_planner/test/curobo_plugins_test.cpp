@@ -50,3 +50,30 @@ TEST(CuroboPlugins, LoadByNameAndReportUnavailableWithoutTheNode)
   }
   rclcpp::shutdown();
 }
+
+TEST(CuroboPlugins, BaseFrameParamRejectsAWorldInAnotherFrameThroughThePluginPath)
+{
+  rclcpp::init(0, nullptr);
+  {
+    auto registry = mp::makePluginlibRegistry();
+    mp::PluginStatus status;
+    mp::PluginContext context;
+    context.set<rclcpp::Node>("node", std::make_shared<rclcpp::Node>("curobo_plugin_base_frame_test"));
+    // The planner plugin initialises first and builds the shared client without a base_frame; the
+    // scene plugin's base_frame must still take effect.
+    auto planner = registry->createPlanner("curobo", status);
+    ASSERT_TRUE(planner->initialize(context, {{"wait_for_service_sec", "0.1"}, {"timeout_sec", "0.2"}}).ok);
+    auto scene = registry->createScene("curobo_scene", status);
+    ASSERT_TRUE(scene != nullptr) << status.message;
+    ASSERT_TRUE(scene->initialize(
+        context, {{"wait_for_service_sec", "0.1"}, {"timeout_sec", "0.2"}, {"base_frame", "base"}}).ok);
+    mp::WorldGeometryUpdate world;
+    world.frame_id = "map";
+    std::string error;
+    EXPECT_FALSE(scene->updateWorldGeometry(world, error));
+    // rejected for its frame, before any service call (there is no node to answer one)
+    EXPECT_NE(error.find("differs from the robot base frame"), std::string::npos) << error;
+  }
+  rclcpp::shutdown();
+}
+

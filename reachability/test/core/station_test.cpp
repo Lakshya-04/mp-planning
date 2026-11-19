@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "reachability/core/builder.hpp"
 #include "reachability/core/station.hpp"
 #include "support.hpp"
@@ -123,4 +125,27 @@ TEST(Station, WithoutABaseModelNothingChanges)
   const auto s = chooseStation(sharedMap(), r);
   EXPECT_EQ(s.yaw, 0.0);
   EXPECT_EQ(s.footprint_clearance, 0.0);
+}
+
+TEST(Station, ARequestWhoseGridCannotBeEnumeratedIsRefusedNotLooped)
+{
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto good = baseRequest(wallTargets({0.0}, {1.0}));
+  EXPECT_TRUE(stationGridProblem(good).empty());
+  auto r = good;
+  r.max_standoff = inf;
+  EXPECT_FALSE(stationGridProblem(r).empty());
+  EXPECT_FALSE(chooseStation(sharedMap(), r).found);
+  r = good;
+  r.grid_step = nan;   // used to reach an int cast of NaN
+  EXPECT_FALSE(stationGridProblem(r).empty());
+  EXPECT_FALSE(chooseStation(sharedMap(), r).found);
+  r = good;
+  r.grid_step = 1e-6;  // ~1.4e6 x 1e6 points
+  EXPECT_FALSE(stationGridProblem(r).empty());
+  EXPECT_FALSE(chooseStation(sharedMap(), r).found);
+  r = good;
+  r.lateral_margin = inf;
+  EXPECT_FALSE(stationGridProblem(r).empty());
 }

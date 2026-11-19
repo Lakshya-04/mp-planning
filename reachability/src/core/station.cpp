@@ -7,10 +7,35 @@
 namespace reachability
 {
 
+std::string stationGridProblem(const StationRequest & q)
+{
+  if (!std::isfinite(q.grid_step) || q.grid_step <= 0.0) {return "grid_step must be finite and positive";}
+  if (!std::isfinite(q.min_clearance) || !std::isfinite(q.max_standoff) || !std::isfinite(q.lateral_margin)) {
+    return "min_clearance, max_standoff and lateral_margin must be finite";
+  }
+  if (q.wall_normal.norm() < 1e-9 || q.targets_world.empty()) {return "";}   // reported elsewhere
+  const Vec3 u = Vec3::UnitZ().cross(q.wall_normal.normalized());
+  if (u.norm() < 1e-6) {return "";}
+  double lo = 1e18, hi = -1e18;
+  for (const auto & t : q.targets_world) {
+    const double a = (t.translation() - q.wall_point).dot(u.normalized());
+    lo = std::min(lo, a);
+    hi = std::max(hi, a);
+  }
+  if (!std::isfinite(lo) || !std::isfinite(hi)) {return "a target position is not finite";}
+  const double rings = std::floor(std::max(0.0, q.max_standoff - q.min_clearance) / q.grid_step) + 1.0;
+  const double along = std::floor(std::max(0.0, hi - lo + 2.0 * q.lateral_margin) / q.grid_step) + 1.0;
+  if (!(rings * along <= static_cast<double>(kMaxGridPoints))) {
+    return "the search grid would have more than " + std::to_string(kMaxGridPoints) +
+           " points: raise grid_step or lower max_standoff / lateral_margin";
+  }
+  return "";
+}
+
 Station chooseStation(const Map4D & map, const StationRequest & q)
 {
   Station best;
-  if (q.targets_world.empty() || q.grid_step <= 0.0 || q.wall_normal.norm() < 1e-9) {
+  if (q.targets_world.empty() || q.wall_normal.norm() < 1e-9 || !stationGridProblem(q).empty()) {
     return best;
   }
   const Vec3 n = q.wall_normal.normalized();

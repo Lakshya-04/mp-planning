@@ -12,6 +12,7 @@
 
 #include "reachability/core/builder.hpp"
 #include "reachability/core/io.hpp"
+#include "reachability/core/stand_verifier.hpp"
 #include "reachability/ros/reachability_node.hpp"
 #include "support.hpp"
 
@@ -64,6 +65,15 @@ struct Fixture
   template<typename Srv>
   static std::string name();
 
+  PlanStands::Response::SharedPtr callVerified(PlanStands::Request::SharedPtr req)
+  {
+    auto client = client_node->create_client<PlanStands>("/reachability/plan_verified_stands");
+    EXPECT_TRUE(client->wait_for_service(5s));
+    auto fut = client->async_send_request(req);
+    EXPECT_EQ(exec.spin_until_future_complete(fut, 30s), rclcpp::FutureReturnCode::SUCCESS);
+    return fut.get();
+  }
+
   std::shared_ptr<reachability::ReachabilityNode> node;
   std::shared_ptr<rclcpp::Node> client_node;
   rclcpp::executors::SingleThreadedExecutor exec;
@@ -73,6 +83,7 @@ template<> std::string Fixture::name<IsReachable>() {return "is_reachable";}
 template<> std::string Fixture::name<GetBaseCandidates>() {return "get_base_candidates";}
 template<> std::string Fixture::name<PlanLiftBands>() {return "plan_lift_bands";}
 template<> std::string Fixture::name<PlanStands>() {return "plan_stands";}
+
 
 geometry_msgs::msg::Pose wallPose(double x, double y, double z)
 {
@@ -306,4 +317,48 @@ int main(int argc, char ** argv)
   const int rc = RUN_ALL_TESTS();
   rclcpp::shutdown();
   return rc;
+}
+
+TEST(ReachabilityNode, VerifiedStandsNeedAVerifier)
+{
+  Fixture f;
+  const auto res = f.callVerified(wideWall());
+  EXPECT_FALSE(res->success);
+  EXPECT_TRUE(res->stands.empty());
+  EXPECT_NE(res->message.find("no stand verifier"), std::string::npos) << res->message;
+}
+
+TEST(ReachabilityNode, VerifiedStandsWithAnAcceptingVerifierCoverTheWallLikePlanStands)
+{
+  Fixture f;
+  f.node->setVerifier(std::make_shared<reachability::FunctionStandVerifier>(
+      [](const reachability::Stand &, double, const reachability::Pose &) {
+        reachability::TargetVerdict v;
+        v.reason = reachability::VerifyReason::kOk;
+        return v;
+      }));
+  const auto res = f.callVerified(wideWall());
+  ASSERT_GE(res->stands.size(), 2U) << res->message;
+  EXPECT_TRUE(res->success) << res->message;
+  std::multiset<uint32_t> seen(res->unreachable.begin(), res->unreachable.end());
+  for (const auto & s : res->stands) {seen.insert(s.target_indices.begin(), s.target_indices.end());}
+  for (uint32_t i = 0; i < 10; ++i) {EXPECT_EQ(seen.count(i), 1U) << i;}
+  EXPECT_NE(res->message.find("verified:"), std::string::npos) << res->message;
+}
+
+TEST(ReachabilityNode, VerifiedStandsReportTargetsTheVerifierRefusedEverywhere)
+{
+  Fixture f;
+  // the two y = -3 targets are refused from every stand (IK fails), the rest are fine
+  f.node->setVerifier(std::make_shared<reachability::FunctionStandVerifier>(
+      [](const reachability::Stand &, double, const reachability::Pose & t) {
+        reachability::TargetVerdict v;
+        const bool first = t.translation().y() < -2.5;   // the two y = -3 targets of wideWall()
+        v.reason = first ? reachability::VerifyReason::kIkFailed : reachability::VerifyReason::kOk;
+        return v;
+      }));
+  const auto res = f.callVerified(wideWall());
+  EXPECT_FALSE(res->success);
+  EXPECT_FALSE(res->unreachable.empty()) << res->message;
+  EXPECT_FALSE(res->stands.empty());
 }

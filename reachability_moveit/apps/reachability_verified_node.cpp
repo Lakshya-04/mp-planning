@@ -7,6 +7,8 @@
 //
 // Needs a running move_group with the robot (docs/moveit_config.md). A request takes minutes on a real wall
 // (about 5 minutes measured on one wall, docs/reachability.md), so call it with a long client timeout.
+// ~/plan_stands answers with the same verifier when the request sets `verified` (or the node parameter
+// `verify_by_default` is true); without either it stays RM4D only.
 // The scene is whatever move_group holds (one fixed stand's view); stand-relative obstacle posing needs the
 // PortStandVerifier boxes/points, not wired here.
 #include <memory>
@@ -45,6 +47,10 @@ int main(int argc, char ** argv)
   vo.max_lift_probes = static_cast<size_t>(P("max_lift_probes", 3));
   vo.jitter_m = P("jitter_m", 0.0);
   vo.max_rounds = static_cast<size_t>(P("max_rounds", 64));
+  // Try each target's lift heights lowest first and stop at the first that solves (fewer IK probes, same confirmed
+  // set and best heights; margins become a lowest-first ordinal). max_verifier_calls bounds the batches (0 = none).
+  vo.stop_at_first_ok = P("stop_at_first_ok", true);
+  vo.max_verifier_calls = static_cast<size_t>(P("max_verifier_calls", 0));
 
   // One backend per port: each keeps one MoveGroupInterface (rebuilding it per group costs about 0.3 s a call).
   auto ik_backend = std::make_shared<motion_planner::MoveItPlanningBackend>();

@@ -343,20 +343,26 @@ StandSelection selectStands(
     bool fresh = false;
     for (auto & st : res.stands) {
       std::vector<size_t> todo;
+      for (const size_t t : st.targets) {
+        if (!cache.count({st.candidate_index, t})) {todo.push_back(t);}
+      }
+      if (todo.empty()) {continue;}   // every pair known from an earlier round: no map query, no verifier call
+      if (opt.verify.max_verifier_calls > 0 && sum.verifier_calls >= opt.verify.max_verifier_calls) {
+        sum.budget_hit = true;
+        continue;
+      }
       std::vector<std::vector<double>> hs;
       const auto reach = reachableByHeight(map, q.targets_world, st.stand.arm_xy.x(), st.stand.arm_xy.y(), heights,
           q.arm_mount_offset_z);
-      for (const size_t t : st.targets) {
-        if (cache.count({st.candidate_index, t})) {continue;}
+      for (const size_t t : todo) {
         std::vector<double> ok;
         for (size_t k = 0; k < heights.size(); ++k) {if (reach[t][k]) {ok.push_back(heights[k]);}}
-        todo.push_back(t);
         hs.push_back(std::move(ok));
       }
-      if (todo.empty()) {continue;}
       fresh = true;
       const auto v = verifyStand(*opt.verifier, st.stand, q.targets_world, todo, hs, opt.verify);
       sum.verifier_calls += v.verifier_calls;
+      sum.verifier_poses += v.verifier_poses;
       for (const auto & r : v.targets) {
         cache[{st.candidate_index, r.target}] = r;
         ++sum.verified_pairs;
@@ -369,6 +375,7 @@ StandSelection selectStands(
         }
       }
     }
+    if (sum.budget_hit) {sum.converged = false; break;}
     if (!fresh) {break;}
     if (round == max_rounds) {sum.converged = false;}
   }

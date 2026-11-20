@@ -82,6 +82,8 @@ struct VerificationSummary
   size_t confirmed_pairs{0};
   std::vector<RefusedPair> refused;     ///< RM4D promised, IK / collision refused (in the order found).
   size_t verifier_calls{0};
+  size_t verifier_poses{0};             ///< Target poses in those batches.
+  bool budget_hit{false};               ///< `verify.max_verifier_calls` stopped it (then also converged = false).
   double optimism() const
   {
     return verified_pairs ? static_cast<double>(refused.size()) / static_cast<double>(verified_pairs) : 0.0;

@@ -74,15 +74,29 @@ StandVerification verifyStand(
       std::vector<Pose> poses;
       for (const size_t t : ts) {poses.push_back(targets_world[t]);}
       ++out.verifier_calls;
+      out.verifier_poses += ts.size();
       auto v = verifier.verify(s, h, poses);
       v.resize(ts.size(), TargetVerdict{VerifyReason::kError, {}});   // a short answer is an error, never an ok
       return v;
     };
+  // Heights ascend, so with stop_at_first_ok each target meets its lowest height first.
+  std::vector<bool> solved(n, false);
+  std::vector<size_t> tried(n, 0);
   for (const auto & [h, who] : by_height) {
     std::vector<size_t> ts;
-    for (const auto & ik : who) {ts.push_back(indices[ik.first]);}
+    std::vector<std::pair<size_t, size_t>> sent;
+    for (const auto & ik : who) {
+      if (opt.stop_at_first_ok && solved[ik.first]) {continue;}
+      ts.push_back(indices[ik.first]);
+      sent.push_back(ik);
+    }
+    if (ts.empty()) {continue;}
     const auto v = call(stand, h, ts);
-    for (size_t j = 0; j < who.size(); ++j) {verdicts[who[j].first][who[j].second] = v[j];}
+    for (size_t j = 0; j < sent.size(); ++j) {
+      verdicts[sent[j].first][sent[j].second] = v[j];
+      ++tried[sent[j].first];
+      if (v[j].ok()) {solved[sent[j].first] = true;}
+    }
   }
 
   // Per target: confirmed if any nominal height solved; the best one is the one the jittered base keeps.
@@ -92,9 +106,10 @@ StandVerification verifyStand(
     auto & r = out.targets[i];
     r.target = indices[i];
     const auto probes = pickProbeHeights(i < heights.size() ? heights[i] : std::vector<double>{}, opt.max_lift_probes);
-    r.height_probes = probes.size();
+    r.height_probes = opt.stop_at_first_ok ? tried[i] : probes.size();
     int worst = -1;
     for (size_t k = 0; k < probes.size(); ++k) {
+      if (opt.stop_at_first_ok && k >= tried[i]) {break;}   // never sent
       const auto & v = verdicts[i][k];
       if (v.ok()) {
         ++r.height_ok;
@@ -103,7 +118,7 @@ StandVerification verifyStand(
         r.reason = v.reason;
       }
     }
-    if (r.height_probes == 0) {r.reason = VerifyReason::kIkFailed;}
+    if (probes.empty()) {r.reason = VerifyReason::kIkFailed;}
     r.lift_margin = r.height_probes ? static_cast<double>(r.height_ok) / static_cast<double>(r.height_probes) : 0.0;
     r.confirmed = r.height_ok > 0;
     if (r.confirmed) {

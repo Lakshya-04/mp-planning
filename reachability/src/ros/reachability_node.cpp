@@ -56,6 +56,7 @@ ReachabilityNode::ReachabilityNode(const rclcpp::NodeOptions & options)
     }
   }
 
+  verify_by_default_ = declare_parameter<bool>("verify_by_default", false);
   const auto strategy = declare_parameter<std::string>("stand_strategy", "greedy");
   stand_strategy_ = parseStandStrategy(strategy, StandStrategy::Greedy);
   if (strategy != "greedy" && strategy != "set_cover") {
@@ -137,6 +138,52 @@ void ReachabilityNode::setVerifier(std::shared_ptr<StandVerifier> verifier, cons
 {
   verifier_ = std::move(verifier);
   verify_options_ = options;
+}
+
+void ReachabilityNode::handleVerifiedPlan(
+  const StationRequest & r, const std::optional<Stand> & start, uint32_t max_stands,
+  reachability_msgs::srv::PlanStands::Response & res)
+{
+  if (!verifier_) {
+    res.message = "verification requested but no stand verifier configured (run reachability_verified_node, which "
+      "brings the IK and collision backend)";
+    return;
+  }
+  VerifiedPlanOptions opt;
+  opt.verifier = verifier_;
+  opt.verify = verify_options_;
+  opt.max_rounds = verify_options_.max_rounds;
+  const VerifiedStandPlan vp = planStandsVerified(*map_, r, start, max_stands, stand_strategy_, {}, opt);
+  for (size_t i = 0; i < vp.plan.stands.size(); ++i) {
+    const auto & a = vp.plan.stands[i];
+    reachability_msgs::msg::Stand m;
+    m.x = a.stand.arm_xy.x();
+    m.y = a.stand.arm_xy.y();
+    m.yaw = a.stand.yaw;
+    m.standoff = a.station.standoff;
+    m.footprint_clearance = a.station.footprint_clearance;
+    m.travel_s = a.travel_s;
+    m.target_indices.assign(a.targets.begin(), a.targets.end());
+    for (const auto & b : a.station.plan.bands) {   // the bands IK confirmed
+      reachability_msgs::msg::LiftBand lb;
+      lb.lift_height = b.lift_height;
+      lb.pose_indices.assign(b.pose_indices.begin(), b.pose_indices.end());
+      m.bands.push_back(lb);
+    }
+    res.stands.push_back(m);
+  }
+  // `unreachable` = no stand can (RM4D) or none was confirmed (IK / collision); the message tells them apart
+  std::vector<uint32_t> bad(vp.plan.unreachable.begin(), vp.plan.unreachable.end());
+  bad.insert(bad.end(), vp.rejected_by_verifier.begin(), vp.rejected_by_verifier.end());
+  std::sort(bad.begin(), bad.end());
+  res.unreachable = bad;
+  res.not_planned.assign(vp.plan.not_planned.begin(), vp.plan.not_planned.end());
+  res.total_travel_s = vp.plan.total_travel_s;
+  res.success = bad.empty() && res.not_planned.empty() && !vp.plan.stands.empty();
+  res.message = "verified: " + std::to_string(vp.rounds) + " round(s), " + std::to_string(vp.verifier_calls) +
+    " verifier batch(es), " + std::to_string(vp.refused.size()) + " stand-target pair(s) refused by IK or collision, " +
+    std::to_string(vp.rejected_by_verifier.size()) + " target(s) no stand confirmed" +
+    (vp.converged ? "" : " (not converged: round or verifier-call limit reached)");
 }
 
 void ReachabilityNode::handlePlanStands(
@@ -238,6 +285,10 @@ void ReachabilityNode::handlePlanStands(
           " of " + std::to_string(sel.verification.verified_pairs) + " RM4D pairs refused by IK or collision" +
           (sel.verification.converged ? "" : " (not converged: round limit reached)");
       }
+      return;
+    }
+    if (req->verified || verify_by_default_) {
+      handleVerifiedPlan(r, start, req->max_stands > 0 ? req->max_stands : 32, *res);
       return;
     }
     const StandPlan plan = planStands(*map_, r, start, req->max_stands > 0 ? req->max_stands : 32, stand_strategy_);

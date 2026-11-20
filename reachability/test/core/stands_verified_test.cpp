@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <map>
+#include <memory>
 #include <set>
+#include <tuple>
 
 #include "reachability/core/builder.hpp"
+#include "reachability/core/global_stands.hpp"
 #include "reachability/core/stands.hpp"
 #include "support.hpp"
 
@@ -205,4 +210,144 @@ TEST(PlanStandsVerified, NoVerifierIsPlanStands)
   const auto v = planStandsVerified(sharedMap(), r, std::nullopt, 32, StandStrategy::Greedy, {}, {});
   ASSERT_EQ(v.plan.stands.size(), plain.stands.size());
   EXPECT_TRUE(v.verification.empty());
+}
+
+// ---- cost: counting fake verifiers ------------------------------------------------------------------------
+
+namespace
+{
+// A verifier that counts the poses it is asked about (the IK cost) next to the batches FunctionStandVerifier counts.
+struct Counting
+{
+  std::shared_ptr<FunctionStandVerifier> verifier;
+  std::shared_ptr<size_t> poses = std::make_shared<size_t>(0);
+};
+
+Counting counting(const Eigen::Vector2d & refused_center, double refused_radius)
+{
+  Counting c;
+  auto poses = c.poses;
+  c.verifier = std::make_shared<FunctionStandVerifier>(
+    [poses, refused_center, refused_radius](const Stand & s, double h, const Pose &) {
+      ++*poses;
+      if ((s.arm_xy - refused_center).norm() < refused_radius) {return no(VerifyReason::kInCollision);}
+      return h < 0.2 ? no(VerifyReason::kIkFailed) : ok();   // the lowest heights fail whatever the stand
+    });
+  return c;
+}
+}  // namespace
+
+TEST(PlanStandsVerifiedCost, StopAtFirstOkSendsFewerPosesAndGivesTheSameCover)
+{
+  const auto r = request(wall({-0.3, 0.0, 0.3}, {0.8, 1.4}));
+  const auto plain = planStands(sharedMap(), r);
+  ASSERT_FALSE(plain.stands.empty());
+  const Eigen::Vector2d liked = plain.stands[0].stand.arm_xy;
+
+  auto run = [&](bool early, size_t * poses, size_t * batches) {
+      auto c = counting(liked, 0.35);
+      VerifiedPlanOptions o;
+      o.verifier = c.verifier;
+      o.verify.max_lift_probes = 4;
+      o.verify.stop_at_first_ok = early;
+      auto v = planStandsVerified(sharedMap(), r, std::nullopt, 32, StandStrategy::Greedy, {}, o);
+      *poses = *c.poses;
+      *batches = c.verifier->calls();
+      EXPECT_EQ(v.verifier_poses, *c.poses);   // the plan's own count agrees with the fake's
+      EXPECT_EQ(v.verifier_calls, *batches);
+      return v;
+    };
+  size_t full_poses = 0, full_batches = 0, fast_poses = 0, fast_batches = 0;
+  const auto full = run(false, &full_poses, &full_batches);
+  const auto fast = run(true, &fast_poses, &fast_batches);
+
+  EXPECT_LT(fast_poses, full_poses) << "full " << full_poses << " fast " << fast_poses;
+  EXPECT_LE(fast_batches, full_batches);
+  // the same result: stands, their targets, the reported rejections and the confirmed lift bands' heights
+  ASSERT_EQ(fast.plan.stands.size(), full.plan.stands.size());
+  for (size_t i = 0; i < full.plan.stands.size(); ++i) {
+    EXPECT_EQ(fast.plan.stands[i].targets, full.plan.stands[i].targets) << i;
+    EXPECT_EQ(fast.plan.stands[i].stand.arm_xy, full.plan.stands[i].stand.arm_xy) << i;
+    std::set<double> hf, hl;
+    for (const auto & b : fast.plan.stands[i].station.plan.bands) {hf.insert(b.lift_height);}
+    for (const auto & b : full.plan.stands[i].station.plan.bands) {hl.insert(b.lift_height);}
+    EXPECT_FALSE(hf.empty());
+    EXPECT_GE(*hf.begin(), 0.2 - 1e-9);   // the failing low heights are never reported as confirmed
+  }
+  EXPECT_EQ(fast.rejected_by_verifier, full.rejected_by_verifier);
+  EXPECT_EQ(fast.refused.size(), full.refused.size());
+  EXPECT_EQ(covered(fast.plan), covered(full.plan));
+  std::printf("[ cost ] poses sent: %zu full -> %zu stop_at_first_ok; batches %zu -> %zu\n",
+    full_poses, fast_poses, full_batches, fast_batches);
+}
+
+TEST(PlanStandsVerifiedCost, TheVerifierCallBudgetStopsTheRunAndSaysSo)
+{
+  const auto r = request(wall({-3.0, -1.5, 0.0, 1.5, 3.0}, {0.8, 1.4}));
+  VerifiedPlanOptions o;
+  auto c = counting(Eigen::Vector2d(1e6, 1e6), 0.1);   // refuses nothing
+  o.verifier = c.verifier;
+  o.verify.max_verifier_calls = 2;
+  const auto v = planStandsVerified(sharedMap(), r, std::nullopt, 32, StandStrategy::Greedy, {}, o);
+  EXPECT_FALSE(v.converged);
+  // the budget is checked before each stand, so a stand in flight may overshoot it by its own batches only
+  EXPECT_LE(v.verifier_calls, 2U + 3U * o.verify.max_lift_probes);
+  // stands that were not verified are not reported as covering anything
+  EXPECT_LT(covered(v.plan).size(), r.targets_world.size());
+  EXPECT_FALSE(v.plan.not_planned.empty());
+}
+
+TEST(SelectStandsCost, StopAtFirstOkSendsFewerPosesAndCoversTheSameTargets)
+{
+  const auto r = request(wall({-0.3, 0.0, 0.3}, {0.8, 1.4}));
+  const auto first = selectStands(sharedMap(), r, std::nullopt, {});
+  ASSERT_FALSE(first.stands.empty());
+  const Eigen::Vector2d liked = first.stands[0].stand.arm_xy;
+  auto run = [&](bool early, size_t * poses) {
+      auto c = counting(liked, 0.35);
+      StandSelectionOptions o;
+      o.verifier = c.verifier;
+      o.verify.max_lift_probes = 4;
+      o.verify.stop_at_first_ok = early;
+      auto s = selectStands(sharedMap(), r, std::nullopt, o);
+      *poses = *c.poses;
+      EXPECT_EQ(s.verification.verifier_poses, *c.poses);
+      return s;
+    };
+  size_t full_poses = 0, fast_poses = 0;
+  const auto full = run(false, &full_poses);
+  const auto fast = run(true, &fast_poses);
+  EXPECT_LT(fast_poses, full_poses);
+  EXPECT_EQ(fast.unreachable, full.unreachable);
+  EXPECT_EQ(fast.rejected_by_verifier, full.rejected_by_verifier);
+  auto cover = [](const StandSelection & s) {
+      std::set<size_t> t;
+      for (const auto & st : s.stands) {t.insert(st.targets.begin(), st.targets.end());}
+      return t;
+    };
+  EXPECT_EQ(cover(fast), cover(full));
+  EXPECT_EQ(cover(fast).size(), r.targets_world.size());
+  EXPECT_TRUE(fast.verification.converged);
+  std::printf("[ cost ] selectStands poses sent: %zu full -> %zu stop_at_first_ok\n", full_poses, fast_poses);
+}
+
+TEST(SelectStandsCost, EveryPairIsVerifiedAtMostOnceAcrossRounds)
+{
+  // a stand refused for everything forces several rounds; no (stand, target) pair may be sent twice
+  const auto r = request(wall({-0.3, 0.0, 0.3}, {0.8, 1.4}));
+  const auto first = selectStands(sharedMap(), r, std::nullopt, {});
+  ASSERT_FALSE(first.stands.empty());
+  std::map<std::tuple<double, double, double, double>, int> seen;
+  size_t repeats = 0;
+  const Eigen::Vector2d liked = first.stands[0].stand.arm_xy;
+  StandSelectionOptions o;
+  o.verify.max_lift_probes = 1;   // one height per pair, so a repeated key is a repeated pair
+  o.verifier = std::make_shared<FunctionStandVerifier>(
+    [&](const Stand & s, double h, const Pose & t) {
+      if (++seen[{s.arm_xy.x(), s.arm_xy.y(), h, t.translation().y() * 1000.0 + t.translation().z()}] > 1) {++repeats;}
+      return (s.arm_xy - liked).norm() < 0.35 ? no(VerifyReason::kInCollision) : ok();
+    });
+  const auto s = selectStands(sharedMap(), r, std::nullopt, o);
+  EXPECT_GE(s.verification.rounds, 2U);
+  EXPECT_EQ(repeats, 0U);
 }

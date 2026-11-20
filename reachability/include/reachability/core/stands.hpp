@@ -69,7 +69,8 @@ StandPlan planStands(
 struct VerifiedPlanOptions
 {
   std::shared_ptr<StandVerifier> verifier;   ///< Required; null makes planStandsVerified return the plain plan.
-  VerifyOptions verify;                      ///< Heights per target, jitter margin (max_rounds is not used here).
+  VerifyOptions verify;                      ///< Heights per target, jitter margin, stop_at_first_ok, max_verifier_calls
+                                             ///< (max_rounds is not used here).
   /// Re-plan rounds for the targets a verifier refused (each round avoids the stands that refused them).
   size_t max_rounds{8};
 };
@@ -92,6 +93,7 @@ struct VerifiedStandPlan
   std::vector<StandRefusal> refused;   ///< Every (stand, target) the verifier refused, with its reason.
   size_t rounds{0};
   size_t verifier_calls{0};
+  size_t verifier_poses{0};   ///< Target poses in those batches.
   bool converged{true};   ///< False when `max_rounds` ended the loop with refused targets still being re-planned.
 };
 

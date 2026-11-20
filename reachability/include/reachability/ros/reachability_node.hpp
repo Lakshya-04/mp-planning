@@ -39,7 +39,13 @@ private:
   void handlePlanStands(
     const reachability_msgs::srv::PlanStands::Request & request,
     reachability_msgs::srv::PlanStands::Response & response, bool verified);
+  /// ~/plan_stands with verification (request flag or `verify_by_default`): planStandsVerified, so the stand cap,
+  /// `stand_strategy` and `max_rounds` apply. Unverified requests never reach this.
+  void handleVerifiedPlan(
+    const StationRequest & r, const std::optional<Stand> & start, uint32_t max_stands,
+    reachability_msgs::srv::PlanStands::Response & response);
   std::shared_ptr<StandVerifier> verifier_;
+  bool verify_by_default_{false};
   VerifyOptions verify_options_;
   std::shared_ptr<Map4D> map_;
   std::optional<BaseModel> base_;

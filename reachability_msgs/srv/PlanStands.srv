@@ -21,6 +21,10 @@ bool has_start
 float64 start_x
 float64 start_y
 float64 start_yaw
+# false (the default) = RM4D only. true confirms every stand's targets with the node's IK and collision verifier
+# (needs reachability_verified_node; a node without one answers success=false and a message, never a silent fallback).
+# The node parameter `verify_by_default` makes true the default for requests that leave this false.
+bool verified
 ---
 bool success                    # every target reached by some stand
 reachability_msgs/Stand[] stands

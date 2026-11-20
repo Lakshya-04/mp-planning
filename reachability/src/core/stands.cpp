@@ -109,9 +109,16 @@ VerifiedStandPlan planStandsVerified(
     for (const size_t k : p.not_planned) {next.push_back(global(k));}
 
     bool any_refusal = false;
+    bool budget_hit = false;
     for (auto & a : p.stands) {
       std::vector<size_t> todo;
       for (const size_t k : a.targets) {todo.push_back(global(k));}
+      if (options.verify.max_verifier_calls > 0 && out.verifier_calls >= options.verify.max_verifier_calls) {
+        // out of budget: this stand is not verified, so its targets are not covered
+        budget_hit = true;
+        next.insert(next.end(), todo.begin(), todo.end());
+        continue;
+      }
       std::vector<std::vector<double>> hs;
       const auto reach = reachableByHeight(
         map, request.targets_world, a.stand.arm_xy.x(), a.stand.arm_xy.y(), heights, request.arm_mount_offset_z);
@@ -122,6 +129,7 @@ VerifiedStandPlan planStandsVerified(
       }
       StandVerification v = verifyStand(*options.verifier, a.stand, request.targets_world, todo, hs, options.verify);
       out.verifier_calls += v.verifier_calls;
+      out.verifier_poses += v.verifier_poses;
       std::vector<size_t> kept;
       std::vector<TargetReport> kept_reports;
       for (const auto & rep : v.targets) {
@@ -151,6 +159,7 @@ VerifiedStandPlan planStandsVerified(
     std::sort(next.begin(), next.end());
     next.erase(std::unique(next.begin(), next.end()), next.end());
     left = std::move(next);
+    if (budget_hit) {out.converged = false; break;}
     if (!any_refusal && left.empty()) {break;}
     if (!any_refusal && !left.empty() && p.stands.empty()) {break;}   // nothing planned, nothing more to try
     if (round == max_rounds && !left.empty()) {out.converged = false;}

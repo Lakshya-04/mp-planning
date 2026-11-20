@@ -87,6 +87,15 @@ struct VerifyOptions
   /// selectStands only: verify, re-rank and re-cover at most this many rounds. A round verifies the stands the
   /// current cover chose, so a wall whose every candidate is refused needs about one round per candidate.
   size_t max_rounds{64};
+  /// Try each target's heights lowest first and stop at the first that solves, instead of probing all of them.
+  /// The confirmed set and each target's best height (the lowest ok one) are unchanged; the cost is that
+  /// `height_ok` is 1 and `lift_margin` = 1 / (heights tried) (a lowest-first ordinal, not a share of ok
+  /// heights), and with `jitter_m` > 0 the offset probes only run at that first ok height. Refused targets
+  /// are still probed at every height. Default false (every probe is made).
+  bool stop_at_first_ok{false};
+  /// Upper bound on verifier batches (`verify()` calls) one selectStands / planStandsVerified run may make;
+  /// 0 = unlimited. When reached, no further stand is verified and the result says `converged = false`.
+  size_t max_verifier_calls{0};
 };
 
 struct TargetReport
@@ -97,7 +106,7 @@ struct TargetReport
                                                   ///< (in_collision > out_of_limits > ik_failed > error).
   double best_height{0.0};                ///< Lift height of `joints` (confirmed only).
   std::vector<double> joints;             ///< The solution at best_height (confirmed only).
-  size_t height_probes{0};                ///< Lift heights tried.
+  size_t height_probes{0};                ///< Lift heights tried (with stop_at_first_ok: up to and including the first ok).
   size_t height_ok{0};                    ///< ... that solved.
   double lift_margin{0.0};                ///< height_ok / height_probes.
   double offset_margin{0.0};              ///< Share of the jittered base offsets (at best_height) that solve; 1 with no jitter.
@@ -112,7 +121,8 @@ struct StandVerification
   double coverage{0.0};                   ///< confirmed / targets (1 for none).
   double mean_margin{0.0};                ///< Mean margin of the confirmed targets (0 when none).
   std::vector<LiftBand> bands;            ///< Greedy lift bands over the confirmed (target, height) pairs.
-  size_t verifier_calls{0};
+  size_t verifier_calls{0};              ///< verify() batches sent.
+  size_t verifier_poses{0};              ///< Target poses sent in those batches (the real IK cost).
 };
 
 /// Verifies `indices` (into targets_world) at `stand`. `heights[i]` are the lift heights to try for

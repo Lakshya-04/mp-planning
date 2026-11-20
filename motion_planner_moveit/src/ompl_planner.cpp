@@ -164,7 +164,21 @@ PlanningResult OmplPlanner::plan(const PlanningRequest & request)
     }
   }
   if (!used_explicit_start_state) {
-    move_group_->setStartStateToCurrentState();
+    // The same hair-outside-the-range problem as above, from the live state: a lift that reads -2e-14 m below its
+    // lower limit made MoveIt's CheckStartStateBounds fail every plan in Gazebo. Take the current state, clamp it
+    // into the range, and plan from that.
+    const auto robot_model = move_group_->getRobotModel();
+    const auto * joint_model_group =
+      robot_model ? robot_model->getJointModelGroup(move_group_name_) : nullptr;
+    const auto current = move_group_->getCurrentState(1.0);
+    if (current && joint_model_group) {
+      moveit::core::RobotState start_state(*current);
+      start_state.enforceBounds(joint_model_group);
+      start_state.update();
+      move_group_->setStartState(start_state);
+    } else {
+      move_group_->setStartStateToCurrentState();
+    }
   }
 
   moveit::planning_interface::MoveGroupInterface::Plan moveit_plan;

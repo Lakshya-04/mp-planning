@@ -38,7 +38,21 @@ struct StationRequest
   /// Where the base is now. With a base model, ties between equally good stations go to the one
   /// the base reaches soonest (travelTime), instead of the one nearest the middle of the work area.
   std::optional<Stand> from;
+  /// Stations (arm base x, y) the search must not pick: any grid point within `avoid_radius` of one is
+  /// skipped (chooseStation, and the set-cover candidate grid). planStandsVerified fills this with the
+  /// stands a verifier refused. Empty = no change.
+  std::vector<Eigen::Vector2d> avoid_stations;
+  double avoid_radius{0.05};
 };
+
+/// True when `xy` lies within the request's avoid radius of an avoided station.
+inline bool stationAvoided(const StationRequest & q, const Eigen::Vector2d & xy)
+{
+  for (const auto & a : q.avoid_stations) {
+    if ((a - xy).norm() <= q.avoid_radius) {return true;}
+  }
+  return false;
+}
 
 struct Station
 {

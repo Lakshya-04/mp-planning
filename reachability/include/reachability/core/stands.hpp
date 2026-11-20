@@ -12,10 +12,12 @@
 // it reaches. Never more stands than the greedy start of that search; the default stays Greedy.
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "reachability/core/stand_verifier.hpp"
 #include "reachability/core/station.hpp"
 
 namespace reachability
@@ -61,5 +63,44 @@ StandPlan planStands(
   const Map4D & map, const StationRequest & request, const std::optional<Stand> & start = std::nullopt,
   size_t max_stands = 32, StandStrategy strategy = StandStrategy::Greedy,
   const SetCoverOptions & cover = {});
+
+/// Opt-in IK and collision confirmation of a `planStands` result (the counterpart of the verifier pass of
+/// `selectStands`).
+struct VerifiedPlanOptions
+{
+  std::shared_ptr<StandVerifier> verifier;   ///< Required; null makes planStandsVerified return the plain plan.
+  VerifyOptions verify;                      ///< Heights per target, jitter margin (max_rounds is not used here).
+  /// Re-plan rounds for the targets a verifier refused (each round avoids the stands that refused them).
+  size_t max_rounds{8};
+};
+
+/// A (stand, target) pair RM4D promised and the verifier refused.
+struct StandRefusal
+{
+  Stand stand;
+  size_t target{0};
+  VerifyReason reason{VerifyReason::kIkFailed};
+};
+
+struct VerifiedStandPlan
+{
+  StandPlan plan;   ///< Every stand's `targets` and lift bands are the confirmed ones; stands that lost all targets are gone.
+                    ///< `unreachable` holds the targets RM4D itself rejects; `not_planned` those left at `max_stands`.
+  std::vector<StandVerification> verification;   ///< One per `plan.stands`, in order.
+  /// Targets RM4D reached from some station but that no stand tried confirmed (sorted). Not in plan.unreachable.
+  std::vector<size_t> rejected_by_verifier;
+  std::vector<StandRefusal> refused;   ///< Every (stand, target) the verifier refused, with its reason.
+  size_t rounds{0};
+  size_t verifier_calls{0};
+  bool converged{true};   ///< False when `max_rounds` ended the loop with refused targets still being re-planned.
+};
+
+/// planStands, then every stand's targets confirmed by `options.verifier`. A refused target goes back into
+/// the pool and is re-planned with the refusing stands avoided; what no stand confirms is reported in
+/// `rejected_by_verifier`, never silently covered. With a base model the travel times are recomputed for the
+/// final stand order. Deterministic. Without a verifier this is planStands.
+VerifiedStandPlan planStandsVerified(
+  const Map4D & map, const StationRequest & request, const std::optional<Stand> & start,
+  size_t max_stands, StandStrategy strategy, const SetCoverOptions & cover, const VerifiedPlanOptions & options);
 
 }  // namespace reachability

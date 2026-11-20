@@ -66,6 +66,7 @@ Station chooseStation(const Map4D & map, const StationRequest & q)
   for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
     for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
       const Vec3 p = on_wall + u * a + n * d;
+      if (stationAvoided(q, Eigen::Vector2d(p.x(), p.y()))) {continue;}
       double yaw = 0.0, clearance = 0.0;
       if (q.base) {
         yaw = bestYaw(*q.base, Eigen::Vector2d(p.x(), p.y()), Eigen::Vector2d(on_wall.x(), on_wall.y()),

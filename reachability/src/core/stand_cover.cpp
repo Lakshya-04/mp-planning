@@ -60,6 +60,7 @@ std::vector<Candidate> enumerate(const Map4D & map, const StationRequest & q, si
   for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
     for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
       const Vec3 p = q.wall_point + u * a + n * d;
+      if (stationAvoided(q, Eigen::Vector2d(p.x(), p.y()))) {continue;}
       Candidate c;
       c.stand.arm_xy = Eigen::Vector2d(p.x(), p.y());
       if (q.base) {

@@ -10,10 +10,12 @@ from ament_index_python.packages import get_package_prefix, get_package_share_di
 from mobile_manipulator_description import load_profile
 from mobile_manipulator_moveit_config import build_moveit_config, controllers_file, resolve_profile
 
-PROFILES = ['generic_6dof_telescopic', 'panda_telescopic']
+PROFILES = ['generic_6dof_telescopic', 'panda_telescopic', 'fr3_telescopic', 'iiwa7_telescopic',
+            'kinova_gen3_telescopic', 'xarm7_telescopic']
 try:
     get_package_share_directory('ur_description')
-    PROFILES.append('ur10e_telescopic')
+    PROFILES += ['ur10e_telescopic', 'ur3e_telescopic', 'ur5e_telescopic', 'ur16e_telescopic',
+                 'ur20_telescopic']
 except Exception:  # noqa: BLE001
     pass
 

@@ -9,7 +9,7 @@ namespace reachability
 namespace
 {
 constexpr char kMagic[8] = {'R', 'M', '4', 'D', 'M', 'A', 'P', '\0'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;   // 1: no MapInfo (still readable)
 
 template<typename T>
 void put(std::ofstream & o, const T & v) {o.write(reinterpret_cast<const char *>(&v), sizeof(T));}
@@ -17,7 +17,8 @@ template<typename T>
 bool get(std::ifstream & i, T & v) {return static_cast<bool>(i.read(reinterpret_cast<char *>(&v), sizeof(T)));}
 }  // namespace
 
-void saveMap(const std::string & path, const Map4D & map, const std::string & fp)
+void saveMap(const std::string & path, const Map4D & map, const std::string & fp,
+  const MapInfo & info)
 {
   std::ofstream o(path, std::ios::binary);
   if (!o) {
@@ -30,6 +31,10 @@ void saveMap(const std::string & path, const Map4D & map, const std::string & fp
   const uint32_t fp_len = static_cast<uint32_t>(fp.size());
   put(o, fp_len);
   o.write(fp.data(), static_cast<std::streamsize>(fp.size()));
+  put(o, info.arm_dof);
+  const uint32_t red_len = static_cast<uint32_t>(info.redundancy.size());
+  put(o, red_len);
+  o.write(info.redundancy.data(), static_cast<std::streamsize>(info.redundancy.size()));
   const uint64_t n = map.raw().size();
   put(o, n);
   o.write(reinterpret_cast<const char *>(map.raw().data()), static_cast<std::streamsize>(n));
@@ -38,7 +43,7 @@ void saveMap(const std::string & path, const Map4D & map, const std::string & fp
   }
 }
 
-Map4D loadMap(const std::string & path, const std::string & expected)
+Map4D loadMap(const std::string & path, const std::string & expected, MapInfo * info)
 {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -49,7 +54,7 @@ Map4D loadMap(const std::string & path, const std::string & expected)
   if (!in.read(magic, sizeof(magic)) || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) {
     throw std::runtime_error(path + ": not a reachability map");
   }
-  if (!get(in, version) || version != kVersion) {
+  if (!get(in, version) || (version != 1 && version != kVersion)) {
     throw std::runtime_error(path + ": unsupported map format version " + std::to_string(version));
   }
   MapParams p;
@@ -68,6 +73,20 @@ Map4D loadMap(const std::string & path, const std::string & expected)
   }
   if (!expected.empty() && fp != expected) {
     throw std::runtime_error(path + ": the map was built for a different robot (fingerprint mismatch)");
+  }
+  MapInfo header;
+  if (version >= 2) {
+    uint32_t red_len = 0;
+    if (!get(in, header.arm_dof) || !get(in, red_len) || red_len > (1U << 20)) {
+      throw std::runtime_error(path + ": bad map info");
+    }
+    header.redundancy.assign(red_len, '\0');
+    if (!in.read(header.redundancy.data(), red_len)) {
+      throw std::runtime_error(path + ": truncated map info");
+    }
+  }
+  if (info) {
+    *info = header;
   }
   Map4D map(p);
   uint64_t n = 0;

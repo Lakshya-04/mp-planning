@@ -19,6 +19,7 @@ add_library(reachability_core
   src/core/map4d.cpp
   src/core/arm_model.cpp
   src/core/builder.cpp
+  src/core/redundancy.cpp
   src/core/lift_bands.cpp
   src/core/station.cpp
   src/core/base_model.cpp
@@ -73,7 +74,7 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t map4d builder lift_bands io station base_model stands global_stands stand_verifier stands_verified horizontal_stands pose_quality column_sequence column_stands)
+  foreach(t map4d builder lift_bands io station base_model stands global_stands stand_verifier stands_verified horizontal_stands pose_quality column_sequence column_stands redundancy)
     ament_add_gtest(${t}_test test/core/${t}_test.cpp)
     target_link_libraries(${t}_test reachability_core)
     target_include_directories(${t}_test PRIVATE test/core)

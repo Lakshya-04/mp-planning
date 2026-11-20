@@ -5,6 +5,7 @@
 
 #include "reachability/core/arm_model.hpp"
 #include "reachability/core/map4d.hpp"
+#include "reachability/core/redundancy.hpp"
 
 namespace reachability
 {
@@ -14,6 +15,9 @@ struct BuildOptions
   size_t samples{2'000'000};  ///< Random joint configurations to evaluate.
   int threads{0};             ///< 0 = hardware concurrency.
   uint32_t seed{1};
+  /// Null-space handling for arms with more than six joints; the default (inactive) marks a cell
+  /// when any value of every joint reaches it, which is what the 6-DOF map does too.
+  RedundancyPolicy redundancy;
 };
 
 struct BuildStats

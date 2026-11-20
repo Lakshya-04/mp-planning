@@ -1,0 +1,21 @@
+# MoveIt limits for the 7-DOF arms that share the joint names arm_joint1..arm_joint7 and the
+# controller family `arm7` (fr3, iiwa7, kinova_gen3, xarm7). Velocity and position limits come from
+# each arm's URDF (the published values in urdf/arms/<arm>_arm.xacro); only accelerations, which no
+# vendor publishes uniformly, are set here, and the lift. Raise them only against the real arm.
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+joint_limits:
+  lift_joint:
+    has_velocity_limits: true
+    max_velocity: 0.2
+    has_acceleration_limits: true
+    max_acceleration: 0.5
+    has_jerk_limits: false
+  arm_joint1: &acc {has_acceleration_limits: true, max_acceleration: 3.0}
+  arm_joint2: *acc
+  arm_joint3: *acc
+  arm_joint4: *acc
+  arm_joint5: *acc
+  arm_joint6: *acc
+  arm_joint7: *acc

@@ -12,6 +12,7 @@ namespace reachability
 Map4D buildMap(
   const ArmModel & arm, const MapParams & params, const BuildOptions & options, BuildStats * stats)
 {
+  options.redundancy.validate(arm);
   const auto t0 = std::chrono::steady_clock::now();
   int threads = options.threads > 0 ? options.threads :
     static_cast<int>(std::max(1U, std::thread::hardware_concurrency()));
@@ -28,6 +29,10 @@ Map4D buildMap(
       Pose tool;
       for (size_t n = 0; n < share; ++n) {
         for (int j = 0; j < arm.dof(); ++j) {
+          if (j == options.redundancy.joint) {
+            q[static_cast<size_t>(j)] = options.redundancy.draw(rng, arm.lower(j), arm.upper(j));
+            continue;
+          }
           std::uniform_real_distribution<double> u(arm.lower(j), arm.upper(j));
           q[static_cast<size_t>(j)] = u(rng);
         }

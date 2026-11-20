@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <sstream>
 #include <string>
 
 #include "reachability/core/arm_model.hpp"
@@ -20,6 +21,7 @@
 #include "reachability/core/builder.hpp"
 #include "reachability/core/io.hpp"
 #include "reachability/core/lift_bands.hpp"
+#include "reachability/core/redundancy.hpp"
 #include "reachability/core/global_stands.hpp"
 #include "reachability/core/station.hpp"
 #include "reachability/core/stands.hpp"
@@ -65,7 +67,7 @@ double step(const std::map<std::string, std::string> & o, const char * k, double
 int usage()
 {
   std::fprintf(stderr,
-    "usage:\n  rm4d_tool build chain.yaml out.rm4d [--samples N --threads T --resolution m --extent m --zmin m --zmax m --seed S]\n"
+    "usage:\n  rm4d_tool build chain.yaml out.rm4d [--samples N --threads T --resolution m --extent m --zmin m --zmax m --seed S\n    [--redundant-joint J --redundant-values a,b,c [--redundant-tol t]]]  (J is 1-based; 7+ joint arms)\n"
     "  rm4d_tool info map.rm4d\n"
     "  rm4d_tool bands map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--z-step dz --lift-max H --lift-step dh --mount-z dz --base-x bx --base-y by]\n"
     "  rm4d_tool station map.rm4d --wall-x X --z-min Z0 --z-max Z1 [--width W --z-step dz --y-step dy --lift-max H --mount-z dz --min-clearance c --grid-step g --base-profile profile.yaml\n"
@@ -93,16 +95,36 @@ int main(int argc, char ** argv)
       b.samples = static_cast<size_t>(num(o, "samples", 2e6));
       b.threads = static_cast<int>(num(o, "threads", 0));
       b.seed = static_cast<uint32_t>(num(o, "seed", 1));
+      if (o.count("redundant-joint")) {
+        b.redundancy.joint = std::atoi(o.at("redundant-joint").c_str()) - 1;   // 1-based on the command line
+        std::stringstream list(o.count("redundant-values") ? o.at("redundant-values") : "");
+        for (std::string v; std::getline(list, v, ',');) {
+          b.redundancy.values.push_back(std::atof(v.c_str()));
+        }
+        b.redundancy.tolerance = num(o, "redundant-tol", 0.0);
+      } else if (o.count("redundant-values") || o.count("redundant-tol")) {
+        std::fprintf(stderr, "--redundant-values and --redundant-tol need --redundant-joint\n");
+        return 2;
+      }
       BuildStats s;
       const Map4D map = buildMap(arm, p, b, &s);
-      saveMap(argv[3], map, arm.fingerprint());
+      MapInfo header;
+      header.arm_dof = static_cast<uint32_t>(arm.dof());
+      header.redundancy = describeRedundancy(arm.dof(), b.redundancy);
+      saveMap(argv[3], map, arm.fingerprint(), header);
       std::printf("built %s: %zu samples (%zu valid, %zu in window) in %.1f s, %zu of %zu cells set (%zu saturated)\n",
         argv[3], s.samples, s.valid, s.in_window, s.seconds, s.nonzero_cells, map.totalCells(), s.saturated_cells);
       return 0;
     }
     if (cmd == "info") {
-      const Map4D map = loadMap(argv[2]);
+      MapInfo header;
+      const Map4D map = loadMap(argv[2], "", &header);
       const auto & p = map.params();
+      if (header.arm_dof > 0) {
+        std::printf("arm: %u joints, redundancy: %s\n", header.arm_dof, header.redundancy.c_str());
+      } else {
+        std::printf("arm: not recorded (format version 1)\n");
+      }
       std::printf("window +-%.2f m, z %.2f..%.2f m, resolution %.3f m, theta bin %.1f deg\ncells %zu, set %zu (%.2f%%)\n",
         p.xy_extent, p.z_min, p.z_max, p.resolution, p.theta_bin * 180.0 / M_PI, map.totalCells(),
         map.nonzeroCells(), 100.0 * static_cast<double>(map.nonzeroCells()) / static_cast<double>(map.totalCells()));

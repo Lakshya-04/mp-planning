@@ -97,6 +97,7 @@ TEST(MotionPlannerTest, CartesianRoutedContactSegmentKeepsPartialInsteadOfFspFal
   EXPECT_EQ(result.mode_used, "cartesian");
   EXPECT_TRUE(result.planning_result.success);
   EXPECT_DOUBLE_EQ(result.planning_result.path_fraction, 0.007);
+  EXPECT_TRUE(result.free_space_backend.empty());  // the free-space plugin planned nothing
   EXPECT_EQ(cartesian_ptr->plan_call_count, 1);
   EXPECT_EQ(fsp_ptr->plan_call_count, 0)
     << "FSP must never be attempted for a contact-flagged cartesian-routed segment";
@@ -128,6 +129,7 @@ TEST(MotionPlannerTest, CartesianRoutedNonContactSegmentFallsBackToFspWhenNoMean
   EXPECT_EQ(result.mode_used, "fsp");
   EXPECT_TRUE(result.planning_result.success);
   EXPECT_DOUBLE_EQ(result.planning_result.path_fraction, 1.0);
+  EXPECT_EQ(result.free_space_backend, "fsp");  // name() of the plugin, not the legacy planner_used
   EXPECT_EQ(cartesian_ptr->plan_call_count, 1)
     << "the low-fraction Cartesian attempt still happens once before falling back";
   EXPECT_EQ(fsp_ptr->plan_call_count, 1)

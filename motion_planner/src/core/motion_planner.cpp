@@ -395,6 +395,7 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
 
   uint64_t total_planning_time_ms = 0;
   std::string mode_used = routed_mode_policy;
+  std::string free_space_backend;  // name() of the free-space plugin if it produced part of the result
 
   // The fix: for an fsp-routed segment -- whether via an explicit hint or a
   // connector/transition-type label -- always attempt Cartesian first,
@@ -426,6 +427,9 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
       free_space_planner_.get();
     planning_result = active_planner->plan(request);
     total_planning_time_ms += planning_result.planning_time_ms;
+    if (active_planner == free_space_planner_.get()) {
+      free_space_backend = free_space_planner_->name();
+    }
   }
 
   // Attribute the whole trajectory-so-far to whichever single planner just
@@ -483,6 +487,9 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
         interpolateAlongPath(request.target_poses, bridge_target_fraction)};
 
       PlanningResult bridge_result = free_space_planner_->plan(bridge_request);
+      if (bridge_result.success) {
+        free_space_backend = free_space_planner_->name();
+      }
       total_planning_time_ms += bridge_result.planning_time_ms;
       if (!bridge_result.success || bridge_result.trajectory.points.empty()) {
         std::ostringstream oss;
@@ -577,6 +584,9 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
     !request.allow_target_contact)
   {
     PlanningResult fsp_fallback = free_space_planner_->plan(request);
+    if (fsp_fallback.success) {
+      free_space_backend = free_space_planner_->name();
+    }
     total_planning_time_ms += fsp_fallback.planning_time_ms;
     if (fsp_fallback.success) {
       trajectory_segments = {{"fsp", 0, fsp_fallback.trajectory.points.size()}};
@@ -601,6 +611,7 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
   result.planning_result = std::move(planning_result);
   result.mode_used = mode_used;
   result.planner_used = planner_for_segment;
+  result.free_space_backend = free_space_backend;
   result.fallback_used = used_fallback_ || segment_fallback_used;
   result.bridge_count = kept_bridge_count;
   result.trajectory_segments = std::move(trajectory_segments);

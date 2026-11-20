@@ -115,6 +115,10 @@ public:
     PlanningResult planning_result;
     std::string mode_used;
     std::string planner_used;
+    /// Name of the free-space plugin (Planner::name(), e.g. "curobo", "moveit") when it produced part of this
+    /// segment's trajectory (the whole plan, a bridge or the fallback); empty for a pure Cartesian segment.
+    /// planner_used is the legacy routing name ("ompl") whichever plugin did the work, so it is no proof.
+    std::string free_space_backend;
     bool mode_switch_used{false};
     bool fallback_used{false};
     /// How many bridge-then-resume cycles survived into the final result

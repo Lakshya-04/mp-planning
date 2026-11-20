@@ -18,6 +18,7 @@ find_package(motion_planner REQUIRED)
 find_package(scene_model REQUIRED)
 find_package(curobo_bridge_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -46,6 +47,7 @@ install(TARGETS curobo_planner_benchmark RUNTIME DESTINATION lib/${PROJECT_NAME}
 if(PCL_FOUND AND TARGET motion_planner::motion_planner_pcd)
   add_executable(curobo_world_loader src/curobo_world_loader_node.cpp)
   target_link_libraries(curobo_world_loader curobo_planner motion_planner::motion_planner_pcd ${PCL_LIBRARIES})
+  ament_target_dependencies(curobo_world_loader tf2_ros)
   install(TARGETS curobo_world_loader RUNTIME DESTINATION lib/${PROJECT_NAME})
 endif()
 

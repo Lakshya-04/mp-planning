@@ -429,6 +429,17 @@ MotionPlanner::SegmentPlanResult MotionPlanner::planSegmentWithStartState(
     total_planning_time_ms += planning_result.planning_time_ms;
     if (active_planner == free_space_planner_.get()) {
       free_space_backend = free_space_planner_->name();
+      if (planning_result.success && planning_result.message.rfind("fallback ", 0) == 0) {
+        logger_->info(
+          "free-space segment '" + routing.label + "' planned by the fallback: " + planning_result.message);
+      }
+      if (!planning_result.success) {
+        // the segment metrics carry only the reason code; the message says why (cuRobo: "call timed out",
+        // "service is not available", "no collision-free trajectory", ...)
+        logger_->warn(
+          "free-space planner '" + free_space_backend + "' failed segment '" + routing.label + "': [" +
+          planning_result.failure_reason_code + "] " + planning_result.message);
+      }
     }
   }
 
@@ -635,6 +646,13 @@ void MotionPlanner::resetContinuity()
   has_previous_segment_ = false;
   previous_mode_used_.clear();
   previous_end_joint_state_.clear();
+}
+
+void MotionPlanner::seedContinuity(const std::vector<double> & joint_state)
+{
+  if (!has_previous_segment_) {
+    previous_end_joint_state_ = joint_state;
+  }
 }
 
 }  // namespace motion_planner

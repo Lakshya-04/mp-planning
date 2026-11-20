@@ -646,5 +646,38 @@ TEST(MotionPlannerTest, PlanSegmentWithStartStateIsSafeUnderConcurrentCalls)
   EXPECT_TRUE(result_b.planning_result.success);
 }
 
+TEST(MotionPlannerTest, SeedContinuityGivesTheFirstSegmentAStartStateOnce)
+{
+  auto fsp = std::make_unique<ScriptedPlanner>("fsp", true, 1.0);
+  auto * fsp_ptr = fsp.get();
+  MotionPlanner planner(std::make_unique<ScriptedPlanner>("cart", false, 0.0), std::move(fsp));
+
+  SegmentRoutingSpec routing;
+  routing.label = "prime";
+  routing.mode_hint = "fsp";
+  PlanningRequest request = makeRequest(0.5);
+  request.target_joint_state = {0.5, 0.5, 0.5};
+
+  planner.resetContinuity();
+  planner.seedContinuity({1.0, 2.0, 3.0});
+  planner.planSegment(request, routing);
+  EXPECT_EQ(fsp_ptr->last_start_joint_state, (std::vector<double>{1.0, 2.0, 3.0}));
+
+  // once a segment has run, a later seed must not override the continuity
+  core_types::Trajectory traj;
+  core_types::TrajectoryPoint p;
+  p.positions = {9.0, 9.0, 9.0};
+  traj.points = {p};
+  planner.recordExecutionOutcome(true, "fsp", traj);
+  planner.seedContinuity({1.0, 1.0, 1.0});
+  planner.planSegment(request, routing);
+  EXPECT_EQ(fsp_ptr->last_start_joint_state, (std::vector<double>{9.0, 9.0, 9.0}));
+
+  // a fresh mission forgets it again
+  planner.resetContinuity();
+  planner.planSegment(request, routing);
+  EXPECT_TRUE(fsp_ptr->last_start_joint_state.empty());
+}
+
 }  // namespace
 }  // namespace motion_planner

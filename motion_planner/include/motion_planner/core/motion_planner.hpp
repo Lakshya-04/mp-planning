@@ -237,6 +237,11 @@ public:
   /// per fresh mission before the first planSegment() call.
   void resetContinuity();
 
+  /// Seeds the start joint state of the next planSegment() when there is no previous segment (the first one after
+  /// resetContinuity()). Backends that plan from an explicit start (cuRobo) refuse a request without one; MoveIt
+  /// reads its own current state. Has no effect once a segment has executed.
+  void seedContinuity(const std::vector<double> & joint_state);
+
 private:
   std::string resolveModePolicy(const SegmentRoutingSpec & routing) const;
   void resolvePlannerSelection();

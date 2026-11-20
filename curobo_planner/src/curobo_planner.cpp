@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "curobo_planner/curobo_planner.hpp"
 
 #include <atomic>
@@ -168,7 +169,12 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
     req->start = request.start_joint_state;
     req->goal = request.target_joint_state;
     auto res = impl_->call<PlanJoint>(impl_->plan_joint, req, error);
-    return res ? toResult(*res) : fail("unavailable", error, mp::FailureStage::kPrecheck);
+    if (!res) {return fail("unavailable", error, mp::FailureStage::kPrecheck);}
+    auto out = toResult(*res);
+    // reaching the target configuration is one unit of work (as the OMPL planner counts it); without it the
+    // manager reads a successful plan as 0 of 1 waypoints done and calls the segment partially completed
+    if (out.success) {out.waypoints_completed = 1;}
+    return out;
   }
   if (request.target_poses.size() == 1) {
     const auto & p = request.target_poses.front();
@@ -182,7 +188,10 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
     req->goal.orientation.z = p.qz;
     req->goal.orientation.w = p.qw;
     auto res = impl_->call<PlanPose>(impl_->plan_pose, req, error);
-    return res ? toResult(*res) : fail("unavailable", error, mp::FailureStage::kPrecheck);
+    if (!res) {return fail("unavailable", error, mp::FailureStage::kPrecheck);}
+    auto out = toResult(*res);
+    if (out.success) {out.waypoints_completed = std::max<size_t>(1, request.waypoint_indices.size());}
+    return out;
   }
   return fail(
     "invalid_request", "need target_joint_state, or exactly one target pose", mp::FailureStage::kPrecheck);

@@ -55,6 +55,8 @@ int main(int argc, char ** argv)
 
   tf2_ros::Buffer tf_buffer(node->get_clock());
   tf2_ros::TransformListener tf_listener(tf_buffer, node, false);
+  // the node is spun by the thread above: tell the buffer, or lookupTransform's timeout is ignored and it fails at once
+  tf_buffer.setUsingDedicatedThread(true);
   curobo_planner::CuroboClientPlanner client(node, options);
   std::string message;
   bool ok = false;

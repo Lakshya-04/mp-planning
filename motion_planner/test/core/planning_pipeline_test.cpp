@@ -97,6 +97,9 @@ struct Fixture
     registry.addPlanner(
       "fake_free", [this] {return std::make_unique<FakePlanner>("free", &calls.free_space, true);});
     registry.addPlanner(
+      "fake_free_failing",
+      [this] {return std::make_unique<FakePlanner>("primary", &calls.free_space, false);});
+    registry.addPlanner(
       "fake_down", [this] {return std::make_unique<FakePlanner>("down", &calls.free_space, true, false);});
     selection.ik = "fake_ik";
     selection.collision = "fake_collision";
@@ -214,6 +217,49 @@ TEST(PlanningPipelineTest, BadSegmentOverrideIsRejected)
   PipelineError error;
   EXPECT_FALSE(pipeline.build(f.selection, f.registry, f.context, error));
   EXPECT_EQ(error.code, "invalid_selection");
+}
+
+TEST(PlanningPipelineTest, FreeSpaceFallbackPlansWhenThePrimaryFails)
+{
+  Fixture f;
+  f.selection.cartesian = "fake_cartesian_failing";
+  f.selection.free_space = "fake_free_failing";
+  f.selection.free_space_fallback = "fake_free";
+  PlanningPipeline pipeline;
+  PipelineError error;
+  ASSERT_TRUE(pipeline.build(f.selection, f.registry, f.context, error)) << error.message;
+  auto planner = pipeline.makeMotionPlanner();
+  ASSERT_TRUE(planner != nullptr);
+
+  SegmentRoutingSpec hint;
+  hint.mode_hint = "fsp";
+  const auto r = planner->planSegment(request(false), hint);
+  EXPECT_TRUE(r.planning_result.success);
+  EXPECT_EQ(f.calls.free_space, 2) << "primary, then the fallback";
+  EXPECT_EQ(r.free_space_backend, "free") << "the backend that planned, not the configured primary";
+  EXPECT_NE(r.planning_result.message.find("fallback free after primary [fake_failure]"), std::string::npos)
+    << r.planning_result.message;
+}
+
+TEST(PlanningPipelineTest, UnavailableFreeSpaceFallbackIsAnError)
+{
+  Fixture f;
+  f.selection.cartesian = "fake_cartesian_failing";
+  f.selection.free_space = "fake_free";
+  f.selection.free_space_fallback = "fake_down";
+  PlanningPipeline pipeline;
+  PipelineError error;
+  EXPECT_FALSE(pipeline.build(f.selection, f.registry, f.context, error)) << "an unavailable fallback is an error";
+  EXPECT_EQ(error.role, "free_space_fallback");
+}
+
+TEST(PlanningConfigTest, ParsesTheFreeSpaceFallback)
+{
+  PlanningSelection s;
+  std::string error;
+  ASSERT_TRUE(parsePlanningSelection("planning:\n  free_space: curobo\n  free_space_fallback: moveit_ompl\n", s, error))
+    << error;
+  EXPECT_EQ(s.free_space_fallback, "moveit_ompl");
 }
 
 TEST(PlanningConfigTest, ParsesTheDocumentedSchemaAndKeepsDefaults)

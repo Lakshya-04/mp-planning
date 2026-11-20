@@ -29,11 +29,11 @@ bool parsePlanningSelection(
     }
     PlanningSelection out;
     const std::set<std::string> known = {
-      "ik", "free_space", "cartesian", "collision", "scene", "segments", "plugin_params"};
+      "ik", "free_space", "free_space_fallback", "cartesian", "collision", "scene", "segments", "plugin_params"};
     for (const auto & kv : planning) {
       const std::string key = kv.first.as<std::string>();
       if (known.count(key) == 0) {
-        error = "unknown key 'planning." + key + "' (known: ik, free_space, cartesian, collision, "
+        error = "unknown key 'planning." + key + "' (known: ik, free_space, free_space_fallback, cartesian, collision, "
           "scene, segments, plugin_params)";
         return false;
       }
@@ -43,6 +43,7 @@ bool parsePlanningSelection(
       };
     read("ik", out.ik);
     read("free_space", out.free_space);
+    read("free_space_fallback", out.free_space_fallback);
     read("cartesian", out.cartesian);
     read("collision", out.collision);
     read("scene", out.scene);

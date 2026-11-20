@@ -28,6 +28,9 @@ struct PlanningSelection
   std::string cartesian{"moveit_cartesian"};
   std::string collision{"moveit_collision"};
   std::string scene;  ///< Optional: empty means no scene plugin.
+  /// Optional second free-space planner: tried when `free_space` fails (e.g. cuRobo unavailable or no path), see
+  /// FallbackPlanner. Empty means no fallback.
+  std::string free_space_fallback;
 
   /// Per-segment override: segment kind ("contact" = allow_target_contact, "transition" = every
   /// other segment) -> "cartesian" | "free_space". Empty means no override.
@@ -70,6 +73,7 @@ private:
   std::shared_ptr<ScenePort> scene_;
   std::unique_ptr<PlannerPlugin> cartesian_;
   std::unique_ptr<PlannerPlugin> free_space_;
+  std::unique_ptr<PlannerPlugin> free_space_fallback_;
 };
 
 }  // namespace motion_planner

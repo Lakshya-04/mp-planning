@@ -1,6 +1,9 @@
 #include "motion_planner/core/planning_pipeline.hpp"
 
+#include "motion_planner/core/planners/fallback_planner.hpp"
+
 #include <utility>
+
 #include <vector>
 
 namespace motion_planner
@@ -50,6 +53,7 @@ bool PlanningPipeline::build(
   scene_.reset();
   cartesian_.reset();
   free_space_.reset();
+  free_space_fallback_.reset();
 
   for (const auto & kv : selection.segments) {
     const bool kind_ok = kv.first == "contact" || kv.first == "transition";
@@ -106,6 +110,15 @@ bool PlanningPipeline::build(
     }
     (std::string(role.first) == "cartesian" ? cartesian_ : free_space_) = std::move(p);
   }
+  if (!selection.free_space_fallback.empty()) {
+    auto p = registry.createPlanner(selection.free_space_fallback, status);
+    if (p) {status = p->initialize(context, paramsFor(selection, selection.free_space_fallback));}
+    if (!status.ok) {
+      error = toError(status, "free_space_fallback", selection.free_space_fallback, registry.names("planner"));
+      return false;
+    }
+    free_space_fallback_ = std::move(p);
+  }
   return true;
 }
 
@@ -114,7 +127,11 @@ std::unique_ptr<MotionPlanner> PlanningPipeline::makeMotionPlanner()
   if (!cartesian_ || !free_space_) {
     return nullptr;
   }
-  auto planner = std::make_unique<MotionPlanner>(std::move(cartesian_), std::move(free_space_));
+  std::unique_ptr<Planner> free_space = std::move(free_space_);
+  if (free_space_fallback_) {
+    free_space = std::make_unique<FallbackPlanner>(std::move(free_space), std::move(free_space_fallback_));
+  }
+  auto planner = std::make_unique<MotionPlanner>(std::move(cartesian_), std::move(free_space));
   planner->setSegmentKindModes(selection_.segments);
   return planner;
 }

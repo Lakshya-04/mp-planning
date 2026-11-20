@@ -173,6 +173,8 @@ TEST(CuroboClient, JointPlanBecomesATimedTrajectory)
   EXPECT_NEAR(r.trajectory.points[2].positions[0], 0.2, 1e-9);
   EXPECT_EQ(r.planning_time_ms, 500U);
   EXPECT_DOUBLE_EQ(r.path_fraction, 1.0);
+  // a reached target configuration counts as one waypoint done, or the manager calls the segment partial
+  EXPECT_EQ(r.waypoints_completed, 1U);
 }
 
 TEST(CuroboClient, ServerFailuresKeepCodeAndStage)
@@ -202,6 +204,7 @@ TEST(CuroboClient, PoseGoalSendsPositionAndQuaternion)
   EXPECT_DOUBLE_EQ(g.position.x, 0.4);
   EXPECT_DOUBLE_EQ(g.orientation.x, 0.1);
   EXPECT_DOUBLE_EQ(g.orientation.w, 0.9);
+  EXPECT_EQ(res.waypoints_completed, 1U);
 }
 
 TEST(CuroboClient, RejectsRequestsItCannotServe)

@@ -177,6 +177,51 @@ TEST(CuroboClient, JointPlanBecomesATimedTrajectory)
   EXPECT_EQ(r.waypoints_completed, 1U);
 }
 
+TEST(CuroboClient, TooFastTrajectoryIsRetimedToTheConfiguredLimits)
+{
+  Fixture f;
+  // the stub moves j1 by 0.1 rad every 0.1 s: 1 rad/s
+  curobo_planner::JointLimitPolicy policy;
+  policy.limits = {{"j1", {0.4, 10.0, 0.0}}, {"j2", {0.4, 10.0, 0.0}}};
+  policy.safety_factor = 1.0;
+  f.planner->setJointLimits(policy);
+  const auto r = f.planner->plan(jointRequest(1.0));
+  ASSERT_TRUE(r.success) << r.message;
+  EXPECT_NEAR(r.trajectory.points[2].time_from_start_sec, 0.2 * 2.5, 1e-9);
+  EXPECT_NE(r.message.find("retimed"), std::string::npos) << r.message;
+  EXPECT_EQ(r.waypoints_completed, 1U);
+}
+
+TEST(CuroboClient, TrajectoryInsideTheLimitsIsReturnedAsCuroboTimedIt)
+{
+  Fixture f;
+  curobo_planner::JointLimitPolicy policy;
+  policy.limits = {{"j1", {2.0, 10.0, 0.0}}, {"j2", {2.0, 10.0, 0.0}}};
+  f.planner->setJointLimits(policy);
+  const auto r = f.planner->plan(jointRequest(1.0));
+  ASSERT_TRUE(r.success) << r.message;
+  EXPECT_NEAR(r.trajectory.points[2].time_from_start_sec, 0.2, 1e-9);
+}
+
+TEST(CuroboClient, RejectModeAndMissingLimitsFailThePlanWithACode)
+{
+  Fixture f;
+  curobo_planner::JointLimitPolicy policy;
+  policy.limits = {{"j1", {0.4, 10.0, 0.0}}, {"j2", {0.4, 10.0, 0.0}}};
+  policy.mode = curobo_planner::LimitMode::kReject;
+  f.planner->setJointLimits(policy);
+  auto r = f.planner->plan(jointRequest(1.0));
+  EXPECT_FALSE(r.success);
+  EXPECT_EQ(r.failure_reason_code, "limit_violation");
+  EXPECT_EQ(r.failure_stage, mp::FailureStage::kPlanning);
+
+  policy.limits.erase("j2");  // a joint of the trajectory has no limit: an error, not "unlimited"
+  f.planner->setJointLimits(policy);
+  r = f.planner->plan(jointRequest(1.0));
+  EXPECT_FALSE(r.success);
+  EXPECT_EQ(r.failure_reason_code, "limit_missing");
+}
+
 TEST(CuroboClient, ServerFailuresKeepCodeAndStage)
 {
   Fixture f;

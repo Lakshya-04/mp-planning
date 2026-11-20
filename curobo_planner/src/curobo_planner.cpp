@@ -157,6 +157,26 @@ CuroboClientPlanner::~CuroboClientPlanner() = default;
 
 void CuroboClientPlanner::setBaseFrame(const std::string & frame) {impl_->options.base_frame = frame;}
 
+void CuroboClientPlanner::setJointLimits(const JointLimitPolicy & policy) {impl_->options.joint_limits = policy;}
+
+namespace
+{
+/// Applies the joint limit guard to a successful plan; a failed check turns it into a failed result.
+mp::PlanningResult guarded(mp::PlanningResult out, const JointLimitPolicy & policy, core_types::Logger & logger)
+{
+  if (!out.success || !policy.enabled()) {return out;}
+  const LimitCheck check = enforceJointLimits(out.trajectory, policy);
+  if (!check.ok) {
+    return fail(check.reason_code, "cuRobo trajectory refused: " + check.message, mp::FailureStage::kPlanning);
+  }
+  if (check.time_scale > 1.0) {
+    logger.info("cuRobo trajectory " + check.message);
+    out.message = out.message.empty() ? check.message : out.message + "; " + check.message;
+  }
+  return out;
+}
+}  // namespace
+
 mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request)
 {
   if (request.start_joint_state.empty()) {
@@ -170,7 +190,7 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
     req->goal = request.target_joint_state;
     auto res = impl_->call<PlanJoint>(impl_->plan_joint, req, error);
     if (!res) {return fail("unavailable", error, mp::FailureStage::kPrecheck);}
-    auto out = toResult(*res);
+    auto out = guarded(toResult(*res), impl_->options.joint_limits, *impl_->logger);
     // reaching the target configuration is one unit of work (as the OMPL planner counts it); without it the
     // manager reads a successful plan as 0 of 1 waypoints done and calls the segment partially completed
     if (out.success) {out.waypoints_completed = 1;}
@@ -189,7 +209,7 @@ mp::PlanningResult CuroboClientPlanner::plan(const mp::PlanningRequest & request
     req->goal.orientation.w = p.qw;
     auto res = impl_->call<PlanPose>(impl_->plan_pose, req, error);
     if (!res) {return fail("unavailable", error, mp::FailureStage::kPrecheck);}
-    auto out = toResult(*res);
+    auto out = guarded(toResult(*res), impl_->options.joint_limits, *impl_->logger);
     if (out.success) {out.waypoints_completed = std::max<size_t>(1, request.waypoint_indices.size());}
     return out;
   }

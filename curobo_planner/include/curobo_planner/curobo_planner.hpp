@@ -11,6 +11,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "core_types/logger.hpp"
+#include "curobo_planner/joint_limit_guard.hpp"
 #include "motion_planner/core/planners/planner.hpp"
 #include "motion_planner/core/scene_port.hpp"
 #include "scene_model/core/types.hpp"
@@ -30,6 +31,10 @@ struct Options
   /// frame_id is set to anything else (the node cannot transform it). Empty: the update's frame is
   /// trusted to be the base frame.
   std::string base_frame;
+  /// Velocity / acceleration limits the returned trajectory must respect (retimed or rejected,
+  /// joint_limit_guard.hpp). cuRobo takes its limits from its robot yml, not from the MoveIt
+  /// joint_limits.yaml; with no limits here the trajectory is returned as cuRobo timed it.
+  JointLimitPolicy joint_limits;
 };
 
 class CuroboClientPlanner : public motion_planner::Planner, public motion_planner::ScenePort
@@ -45,6 +50,8 @@ public:
   /// Sets Options::base_frame after construction (the plugins share one client, built by whichever
   /// plugin initialised first). Call before planning.
   void setBaseFrame(const std::string & frame);
+  /// Sets Options::joint_limits after construction (same sharing rule as setBaseFrame).
+  void setJointLimits(const JointLimitPolicy & policy);
 
   /// Replaces the planner's boxes and points (`points_origin` applied). The distance field set by
   /// setEsdf() is kept unless `world` carries points, which replace it. False on failure; the node

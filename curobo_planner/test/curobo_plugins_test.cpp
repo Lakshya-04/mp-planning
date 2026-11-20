@@ -77,3 +77,27 @@ TEST(CuroboPlugins, BaseFrameParamRejectsAWorldInAnotherFrameThroughThePluginPat
   rclcpp::shutdown();
 }
 
+
+TEST(CuroboPlugins, JointLimitParamsAreValidatedAtInitialize)
+{
+  rclcpp::init(0, nullptr);
+  {
+    auto registry = mp::makePluginlibRegistry();
+    mp::PluginStatus status;
+    mp::PluginContext context;
+    context.set<rclcpp::Node>("node", std::make_shared<rclcpp::Node>("curobo_plugin_limits_test"));
+    const mp::PluginParams base = {{"wait_for_service_sec", "0.1"}, {"timeout_sec", "0.2"}};
+    auto with = [&](mp::PluginParams extra) {
+        extra.insert(base.begin(), base.end());
+        return registry->createPlanner("curobo", status)->initialize(context, extra);
+      };
+    auto bad_mode = with({{"joint_limits", "j1:1:2"}, {"limit_mode", "clamp"}});
+    EXPECT_FALSE(bad_mode.ok);
+    EXPECT_EQ(bad_mode.code, "invalid_param");
+    EXPECT_FALSE(with({{"joint_limits_file", "/nonexistent/joint_limits.yaml"}}).ok);
+    EXPECT_FALSE(with({{"joint_limits_file", "package://no_such_package_xyz/config/joint_limits.yaml"}}).ok);
+    EXPECT_FALSE(with({{"joint_limits", "j1:1"}}).ok);
+    EXPECT_TRUE(with({{"joint_limits", "j1:1:2,j2:0.5:1"}, {"limit_safety_factor", "0.8"}}).ok);
+  }
+  rclcpp::shutdown();
+}

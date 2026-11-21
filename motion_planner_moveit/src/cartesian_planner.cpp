@@ -554,6 +554,9 @@ PlanningResult CartesianPlanner::plan(const PlanningRequest & request)
       start_state.setToDefaultValues();
     }
   }
+  // Joint encoders can report a hair outside the limits (1e-14 on a prismatic lift); MoveIt's
+  // start-state bounds check rejects that outright, so clamp it into the bounds first.
+  start_state.enforceBounds(joint_model_group);
   start_state.update();
   if (node_) {
     const Eigen::Isometry3d & start_pose = start_state.getGlobalLinkTransform(tip_link_model);

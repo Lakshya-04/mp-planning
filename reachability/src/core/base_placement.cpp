@@ -504,18 +504,16 @@ BasePlacement planBasePlacement(
   co.verifier = opt.verifier;
   co.arm = opt.arm;
 
-  // Everything the filters removed is avoided, so planColumnStands sees exactly the survivors.
-  StationRequest sreq = station;
-  const double radius = std::min(station.avoid_radius, 0.49 * station.grid_step);
-  sreq.avoid_radius = radius;
-  for (const auto & c : rejected_nav) {sreq.avoid_stations.push_back(c.stand.arm_xy);}
-  for (const auto & c : rejected_yaw) {sreq.avoid_stations.push_back(c.stand.arm_xy);}
+  // The survivors of the yaw and navigation filters go straight to the planner; the caller's avoid
+  // list (and radius) was already applied when the candidates were made.
+  std::vector<CandidateStand> pool = survivors;
+  co.candidates = &pool;
 
   ColumnStandPlan best;
   bool have_plan = false;
   const size_t rounds = opt.verifier ? std::max<size_t>(opt.verifier_rounds, 1) : 1;
   for (size_t r = 0; r < rounds; ++r) {
-    ColumnStandPlan plan = planColumnStands(map, sreq, columns, start, co);
+    ColumnStandPlan plan = planColumnStands(map, station, columns, start, co);
     out.rounds = r + 1;
     const bool better = !have_plan || plan.strokes_covered > best.strokes_covered ||
       (plan.strokes_covered == best.strokes_covered && plan.whole > best.whole) ||
@@ -526,10 +524,11 @@ BasePlacement planBasePlacement(
     const ColumnStandPlan & last = better ? best : plan;
     bool added = false;
     for (const auto & rf : last.refused) {
-      bool dup = false;
-      for (const auto & a : sreq.avoid_stations) {dup = dup || (a - rf.stand.arm_xy).norm() < 1e-9;}
-      if (!dup) {
-        sreq.avoid_stations.push_back(rf.stand.arm_xy);
+      const size_t before = pool.size();
+      pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const CandidateStand & c) {
+          return (c.stand.arm_xy - rf.stand.arm_xy).norm() < 1e-9;
+        }), pool.end());
+      if (pool.size() != before) {
         out.refused_stands.push_back(rf.stand);
         added = true;
       }
@@ -584,10 +583,11 @@ BasePlacement planBasePlacement(
     else {++out.unreachable;}
     if (columns[k].strokes_world.empty()) {bc.reason = BpoReason::kOk; bc.escalation = BpoEscalation::kNone; continue;}
 
-    // The cheapest escalation step at which a whole stand exists (among the survivors).
+    // Escalation follows the final status: a whole column reports the cheapest step at which it is whole;
+    // any other column reports split / skipped / unreachable, never 'none' (the reason says why).
     bool whole_exists = false;
     for (size_t c = 0; c < survivors.size() && !whole_exists; ++c) {whole_exists = ev[c][k].status == ColumnStatus::kWhole;}
-    if (whole_exists) {
+    if (cr.status == ColumnStatus::kWhole && whole_exists) {
       double mz = 0.0;
       V2 mxy(0.0, 0.0);
       for (const auto & p : columns[k].strokes_world) {

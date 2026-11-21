@@ -44,8 +44,8 @@ enum class StandSelectionCode
   kNoTargets,           ///< Nothing to cover; success with an empty tour.
   kInvalidRequest,      ///< Bad grid step, wall normal, lift range or options.
   kNoCandidates,        ///< No candidate stand fits (footprint clearance) or reaches any target.
-  kNoFreeStand,         ///< The request's free space filtered out every candidate stand (see StationRequest::free_space).
   kUnreachableTargets,  ///< Some targets are reachable from no candidate; the rest are covered.
+  kNoFreeStand,         ///< The request's free space filtered out every candidate stand (see StationRequest::free_space).
 };
 
 const char * toString(StandSelectionCode code);

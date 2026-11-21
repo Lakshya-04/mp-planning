@@ -225,15 +225,7 @@ void ReachabilityNode::handlePlanStands(
       return;
     }
     // the search is stations x lift heights x targets per round: refuse requests far beyond a real wall
-    double x_lo = 1e18, x_hi = -1e18, y_lo = 1e18, y_hi = -1e18;
-    for (const auto & t : r.targets_world) {
-      x_lo = std::min(x_lo, t.translation().x());
-      x_hi = std::max(x_hi, t.translation().x());
-      y_lo = std::min(y_lo, t.translation().y());
-      y_hi = std::max(y_hi, t.translation().y());
-    }
-    const double span = std::hypot(x_hi - x_lo, y_hi - y_lo) + 2.0 * r.lateral_margin;
-    const double stations = ((r.max_standoff - r.min_clearance) / r.grid_step + 1.0) * (span / r.grid_step + 1.0);
+    const double stations = stationGridPointCount(r);
     const double heights = (r.lift_max - r.lift_min) / r.lift_step + 1.0;
     const double work = stations * heights * static_cast<double>(r.targets_world.size());
     if (!std::isfinite(work) || work > kMaxStandWork) {

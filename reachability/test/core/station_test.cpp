@@ -149,3 +149,42 @@ TEST(Station, ARequestWhoseGridCannotBeEnumeratedIsRefusedNotLooped)
   r.lateral_margin = inf;
   EXPECT_FALSE(stationGridProblem(r).empty());
 }
+
+TEST(Station, GridPointCountMatchesTheGridOnWallsAndCeilings)
+{
+  for (const Vec3 & n : {Vec3(-1, 0, 0), Vec3(0, 0, -1), Vec3(0.01, 0, -1)}) {
+    StationRequest q;
+    q.wall_point = Vec3(0, 0, 0);
+    q.wall_normal = n;
+    q.grid_step = 0.1;
+    q.lateral_margin = 0.2;
+    q.min_clearance = 0.3;
+    q.max_standoff = 0.9;
+    for (const double x : {0.0, 1.0}) {
+      for (const double y : {0.0, 0.8}) {
+        Pose T = Pose::Identity();
+        T.translation() = Vec3(x, y, 0.0);
+        q.targets_world.push_back(T);
+      }
+    }
+    const double count = stationGridPointCount(q);
+    StationGridStats st;
+    stationGrid(q, &st);
+    EXPECT_NEAR(count, static_cast<double>(st.visited), 0.1 * count);
+    EXPECT_GT(count, 0.0);
+  }
+  // a 10 x 10 m ceiling patch is counted by its area, not by standoff rings
+  StationRequest big;
+  big.wall_normal = Vec3(0, 0, -1);
+  big.grid_step = 0.1;
+  big.lateral_margin = 0.0;
+  for (const double x : {0.0, 10.0}) {
+    for (const double y : {0.0, 10.0}) {
+      Pose T = Pose::Identity();
+      T.translation() = Vec3(x, y, 0.0);
+      big.targets_world.push_back(T);
+    }
+  }
+  EXPECT_NEAR(stationGridPointCount(big), 101.0 * 101.0, 1.0);
+  EXPECT_EQ(stationGridPointCount(StationRequest{}), 0.0);
+}

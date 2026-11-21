@@ -35,6 +35,22 @@ double planeClearance(const StationRequest & q, const SurfaceFrame & f, const St
   return best;
 }
 
+/// In-plane grid axes of the stand search. A wall uses the frame's u and v. A horizontal plane (level or
+/// tilted within the tolerance) is gridded in the floor's x-y plane along the frame's axes projected onto it,
+/// so a ceiling off level by a fraction of a degree has exactly the grid of a level one.
+struct GridAxes
+{
+  Eigen::Vector3d u, v;
+};
+
+GridAxes gridAxes(const SurfaceFrame & f)
+{
+  if (!f.horizontal) {return {f.u, f.v};}
+  const Eigen::Vector3d u = Eigen::Vector3d(f.u.x(), f.u.y(), 0.0).normalized();
+  const Eigen::Vector3d v = Eigen::Vector3d(f.v.x(), f.v.y(), 0.0).normalized();
+  return {u, v};
+}
+
 enum class YawResult { kOk, kPlaneRejected, kFreeSpaceRejected };
 
 /// Picks the base yaw at an arm base position. Without a free space this is exactly bestYaw (vertical
@@ -94,29 +110,38 @@ std::string stationGridProblem(const StationRequest & q)
   if (!std::isfinite(q.min_clearance) || !std::isfinite(q.max_standoff) || !std::isfinite(q.lateral_margin)) {
     return "min_clearance, max_standoff and lateral_margin must be finite";
   }
+  if (!surfaceFrame(q.wall_normal).ok || q.targets_world.empty()) {return "";}   // reported elsewhere
+  const double points = stationGridPointCount(q);
+  if (!std::isfinite(points)) {return "a target position is not finite";}
+  if (!(points <= static_cast<double>(kMaxGridPoints))) {
+    return "the search grid would have more than " + std::to_string(kMaxGridPoints) +
+           " points: raise grid_step or lower max_standoff / lateral_margin";
+  }
+  return "";
+}
+
+double stationGridPointCount(const StationRequest & q)
+{
   const SurfaceFrame f = surfaceFrame(q.wall_normal);
-  if (!f.ok || q.targets_world.empty()) {return "";}   // reported elsewhere
+  if (!f.ok || q.targets_world.empty() || !(q.grid_step > 0.0)) {return 0.0;}
+  const GridAxes ax = gridAxes(f);
   double lo = 1e18, hi = -1e18, vlo = 1e18, vhi = -1e18;
   for (const auto & t : q.targets_world) {
-    const double a = (t.translation() - q.wall_point).dot(f.u);
-    const double b = (t.translation() - q.wall_point).dot(f.v);
+    const double a = (t.translation() - q.wall_point).dot(ax.u);
+    const double b = (t.translation() - q.wall_point).dot(ax.v);
     lo = std::min(lo, a);
     hi = std::max(hi, a);
     vlo = std::min(vlo, b);
     vhi = std::max(vhi, b);
   }
   if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(vlo) || !std::isfinite(vhi)) {
-    return "a target position is not finite";
+    return std::numeric_limits<double>::quiet_NaN();
   }
   const double along = std::floor(std::max(0.0, hi - lo + 2.0 * q.lateral_margin) / q.grid_step) + 1.0;
   const double rings = f.horizontal ?
     std::floor(std::max(0.0, vhi - vlo + 2.0 * q.lateral_margin) / q.grid_step) + 1.0 :
     std::floor(std::max(0.0, q.max_standoff - q.min_clearance) / q.grid_step) + 1.0;
-  if (!(rings * along <= static_cast<double>(kMaxGridPoints))) {
-    return "the search grid would have more than " + std::to_string(kMaxGridPoints) +
-           " points: raise grid_step or lower max_standoff / lateral_margin";
-  }
-  return "";
+  return rings * along;
 }
 
 std::vector<StationGridPoint> stationGrid(const StationRequest & q, StationGridStats * stats)
@@ -127,12 +152,13 @@ std::vector<StationGridPoint> stationGrid(const StationRequest & q, StationGridS
   st = StationGridStats{};
   const SurfaceFrame f = surfaceFrame(q.wall_normal);
   if (q.targets_world.empty() || !f.ok || !(q.grid_step > 0.0)) {return out;}
+  const GridAxes ax = gridAxes(f);
   double u_lo = 1e18, u_hi = -1e18, v_lo = 1e18, v_hi = -1e18;
   for (const auto & t : q.targets_world) {
-    const double a = (t.translation() - q.wall_point).dot(f.u);
+    const double a = (t.translation() - q.wall_point).dot(ax.u);
     u_lo = std::min(u_lo, a);
     u_hi = std::max(u_hi, a);
-    const double b = (t.translation() - q.wall_point).dot(f.v);
+    const double b = (t.translation() - q.wall_point).dot(ax.v);
     v_lo = std::min(v_lo, b);
     v_hi = std::max(v_hi, b);
   }
@@ -160,13 +186,13 @@ std::vector<StationGridPoint> stationGrid(const StationRequest & q, StationGridS
   if (f.horizontal) {
     for (double b = v_lo; b <= v_hi + 1e-9; b += q.grid_step) {
       for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
-        visit(q.wall_point + f.u * a + f.v * b, a, 0.0);
+        visit(q.wall_point + ax.u * a + ax.v * b, a, 0.0);
       }
     }
   } else {
     for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
       for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
-        visit(q.wall_point + f.u * a + f.n * d, a, d);
+        visit(q.wall_point + ax.u * a + f.n * d, a, d);
       }
     }
   }
@@ -187,12 +213,13 @@ Station chooseStation(const Map4D & map, const StationRequest & q)
   }
   best.code = StationCode::kNoReachableStand;
   const SurfaceFrame f = surfaceFrame(q.wall_normal);
+  const GridAxes ax = gridAxes(f);
   double u_lo = 1e18, u_hi = -1e18, v_lo = 1e18, v_hi = -1e18;
   for (const auto & t : q.targets_world) {
-    const double a = (t.translation() - q.wall_point).dot(f.u);
+    const double a = (t.translation() - q.wall_point).dot(ax.u);
     u_lo = std::min(u_lo, a);
     u_hi = std::max(u_hi, a);
-    const double b = (t.translation() - q.wall_point).dot(f.v);
+    const double b = (t.translation() - q.wall_point).dot(ax.v);
     v_lo = std::min(v_lo, b);
     v_hi = std::max(v_hi, b);
   }
@@ -200,7 +227,7 @@ Station chooseStation(const Map4D & map, const StationRequest & q)
   u_hi += q.lateral_margin;
   const double u_mid = 0.5 * (u_lo + u_hi);
   const double v_mid = 0.5 * (v_lo + v_hi);
-  const Vec3 centre = q.wall_point + f.u * u_mid + f.v * v_mid;
+  const Vec3 centre = q.wall_point + ax.u * u_mid + ax.v * v_mid;
 
   // Rank: fewer unreachable targets, then fewer bands, then a base near the middle of the work
   // area, then the smaller standoff.

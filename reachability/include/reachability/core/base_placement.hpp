@@ -125,7 +125,9 @@ enum class BpoReason
 
 const char * toString(BpoReason reason);
 
-/// The cheapest escalation step at which the column became whole.
+/// What the final plan needed for the column: the cheapest step at which a whole column became whole, or
+/// kSplit / kSkipped / kUnreachable when the final status is not whole (also when the stand cap or the
+/// verifier cut a column that a whole stand could serve; BpoReason says why).
 enum class BpoEscalation
 {
   kNone,          ///< Whole at the stand nearest to it, at the nominal lift height.

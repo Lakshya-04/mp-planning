@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "reachability/core/column_sequence.hpp"
+#include "reachability/core/global_stands.hpp"
 #include "reachability/core/station.hpp"
 
 namespace reachability
@@ -48,6 +49,9 @@ struct ColumnStandOptions
   size_t max_stands{32};
   StandVerifier * verifier{nullptr};   ///< Optional confirmation of the chosen (stand, column) pairs.
   const ArmModel * arm{nullptr};       ///< With a verifier: singular value and joint-limit margins of its solutions.
+  /// When set, these are the candidate stands (already filtered by the caller) instead of the grid of
+  /// makeCandidateStands(station); the station's avoid list is then not applied again.
+  const std::vector<CandidateStand> * candidates{nullptr};
 };
 
 /// One column visit from a stand: its lift height and the strokes done in it.

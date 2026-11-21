@@ -73,7 +73,7 @@ ColumnStandPlan planColumnStands(
     out.message = problem;
     return out;
   }
-  const std::vector<CandidateStand> cands = makeCandidateStands(station);
+  const std::vector<CandidateStand> cands = opt.candidates ? *opt.candidates : makeCandidateStands(station);
   out.candidates = cands.size();
   if (cands.empty()) {
     out.message = "no candidate stand fits the wall (clearance, footprint or wall normal)";

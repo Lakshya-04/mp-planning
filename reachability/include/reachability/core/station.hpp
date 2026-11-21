@@ -98,6 +98,11 @@ constexpr size_t kMaxGridPoints = 250000;
 /// looping on it (an infinite max_standoff) or running out of memory (a tiny grid_step).
 std::string stationGridProblem(const StationRequest & request);
 
+/// Number of grid points stationGrid visits before any filter (rings x positions along u; on a horizontal
+/// plane the u span times the v span). 0 for a zero normal, no targets or a non-positive grid_step; NaN for a
+/// non-finite target. Callers that bound the work use this, not their own estimate.
+double stationGridPointCount(const StationRequest & request);
+
 /// One kept grid point of the stand search (shared by chooseStation and the candidate generators).
 struct StationGridPoint
 {

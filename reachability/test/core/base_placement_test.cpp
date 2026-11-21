@@ -691,3 +691,85 @@ TEST(BasePlacementProperty, RandomWallsWithObstaclesAndPartitions)
     EXPECT_TRUE(sameStands(p, planBasePlacement(map, wallFrame(), cols, fs, start, o)));
   }
 }
+
+// ---------------------------------------------------------------- review regressions
+
+TEST(BasePlacement, ACeilingOffLevelIsStillACeiling)
+{
+  const Map4D map = ringMap(0.0, 0.6);
+  const auto cols = ceilingColumns(0.0, 0.0, 3, 3);
+  size_t level_candidates = 0, level_stands = 0;
+  for (const double deg : {0.0, 0.01, 0.5, 2.0}) {
+    SCOPED_TRACE(deg);
+    const double t = deg * 3.14159265358979323846 / 180.0;
+    const Vec3 n(std::sin(t), 0.0, -std::cos(t));
+    EXPECT_TRUE(surfaceFrame(n).horizontal);
+    BasePlacementOptions o = ceilingOptions(rect(0.5, 0.5, true));
+    const BasePlacement p = planBasePlacement(map, surfaceFrame(n, Vec3(0.0, 0.0, kCeil)), cols, FreeSpace{}, std::nullopt, o);
+    if (deg == 0.0) {
+      level_candidates = p.candidates;
+      level_stands = p.stand_count;
+      EXPECT_GT(level_candidates, 0u);
+      EXPECT_TRUE(p.success);
+    }
+    EXPECT_EQ(p.candidates, level_candidates);
+    EXPECT_EQ(p.stand_count, level_stands);
+    EXPECT_TRUE(p.success);
+  }
+}
+
+TEST(BasePlacement, TiltedWallsKeepTheOldAxisAndStayWalls)
+{
+  const Map4D map = syntheticMap();
+  const std::vector<ColumnPlan> cols = {vcol("a", 0.0, 0.2, 0.6)};
+  for (const double deg : {0.0, 3.0, 10.0}) {
+    SCOPED_TRACE(deg);
+    const double t = deg * 3.14159265358979323846 / 180.0;
+    const Vec3 n(-std::cos(t), 0.0, std::sin(t));
+    const SurfaceFrame f = surfaceFrame(n, Vec3(2.0, 0.0, 0.0));
+    EXPECT_FALSE(f.horizontal);
+    Vec3 u = Vec3::UnitZ().cross(n.normalized());
+    u.normalize();
+    EXPECT_EQ(f.u.x(), u.x());
+    EXPECT_EQ(f.u.y(), u.y());
+    EXPECT_EQ(f.u.z(), u.z());
+    const BasePlacement p = planBasePlacement(map, f, cols, FreeSpace{}, std::nullopt, wallOptions(rect(0.5, 0.5, false)));
+    EXPECT_GT(p.candidates, 0u);
+  }
+}
+
+TEST(BasePlacement, TheCallersAvoidRadiusIsKept)
+{
+  const Map4D map = syntheticMap();
+  BasePlacementOptions o = wallOptions(rect(0.5, 0.5, false));
+  const std::vector<ColumnPlan> cols = {vcol("a", 0.0, 0.2, 0.6)};
+  const BasePlacement a = planBasePlacement(map, wallFrame(), cols, FreeSpace{}, std::nullopt, o);
+  ASSERT_FALSE(a.stands.empty());
+  const V2 bad = a.stands[0].stand.arm_xy;
+  o.search.avoid_stations = {bad};
+  o.search.avoid_radius = 0.35;
+  const BasePlacement b = planBasePlacement(map, wallFrame(), cols, FreeSpace{}, std::nullopt, o);
+  for (const auto & s : b.stands) {EXPECT_GT((s.stand.arm_xy - bad).norm(), 0.35);}
+}
+
+TEST(BasePlacement, EscalationFollowsTheFinalStatus)
+{
+  const Map4D map = syntheticMap();
+  BasePlacementOptions o = wallOptions(rect(0.5, 0.5, true));
+  o.max_stands = 1;
+  const BasePlacement p = planBasePlacement(map, wallFrame(), vcols(-1.6, 1.6, 0.4), FreeSpace{}, std::nullopt, o);
+  size_t cut = 0;
+  for (const auto & c : p.columns) {
+    if (c.status == ColumnStatus::kWhole) {
+      EXPECT_NE(c.escalation, BpoEscalation::kUnreachable);
+      EXPECT_NE(c.escalation, BpoEscalation::kSplit);
+      EXPECT_NE(c.escalation, BpoEscalation::kSkipped);
+    } else {
+      EXPECT_NE(c.escalation, BpoEscalation::kNone);
+      EXPECT_NE(c.escalation, BpoEscalation::kLiftHeight);
+      EXPECT_NE(c.escalation, BpoEscalation::kOtherStand);
+      cut += c.reason == BpoReason::kMaxStands ? 1 : 0;
+    }
+  }
+  EXPECT_GT(cut, 0u);
+}

@@ -34,7 +34,7 @@ namespace reachability
 struct CandidateStand
 {
   Stand stand;                     ///< Arm base position and base yaw.
-  double standoff{0.0};            ///< Arm base distance from the wall plane (m).
+  double standoff{0.0};            ///< Arm base distance from the wall plane (m; 0 on a horizontal plane).
   double footprint_clearance{0.0}; ///< Footprint to wall distance (m; 0 without a base model).
 };
 
@@ -44,6 +44,7 @@ enum class StandSelectionCode
   kNoTargets,           ///< Nothing to cover; success with an empty tour.
   kInvalidRequest,      ///< Bad grid step, wall normal, lift range or options.
   kNoCandidates,        ///< No candidate stand fits (footprint clearance) or reaches any target.
+  kNoFreeStand,         ///< The request's free space filtered out every candidate stand (see StationRequest::free_space).
   kUnreachableTargets,  ///< Some targets are reachable from no candidate; the rest are covered.
 };
 

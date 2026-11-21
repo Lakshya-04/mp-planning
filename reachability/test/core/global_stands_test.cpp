@@ -171,7 +171,7 @@ TEST(GlobalStands, EmptyInputsAreHandled)
   bad.lift_step = 0.0;
   EXPECT_EQ(selectStands(sharedMap(), bad).code, StandSelectionCode::kInvalidRequest);
   bad = r2;
-  bad.wall_normal = Vec3::UnitZ();
+  bad.wall_normal = Vec3::Zero();
   EXPECT_EQ(selectStands(sharedMap(), bad).code, StandSelectionCode::kInvalidRequest);
   StandSelectionOptions o;
   o.margin_penalty = -1.0;

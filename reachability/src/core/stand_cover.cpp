@@ -44,40 +44,21 @@ std::vector<Candidate> enumerate(const Map4D & map, const StationRequest & q, si
 {
   std::vector<Candidate> out;
   if (q.targets_world.empty() || q.grid_step <= 0.0 || q.wall_normal.norm() < 1e-9) {return out;}
-  const Vec3 n = q.wall_normal.normalized();
-  Vec3 u = Vec3::UnitZ().cross(n);
-  if (u.norm() < 1e-6) {return out;}
-  u.normalize();
-  double u_lo = 1e18, u_hi = -1e18;
-  for (const auto & t : q.targets_world) {
-    const double a = (t.translation() - q.wall_point).dot(u);
-    u_lo = std::min(u_lo, a);
-    u_hi = std::max(u_hi, a);
-  }
-  u_lo -= q.lateral_margin;
-  u_hi += q.lateral_margin;
   const auto heights = heightRange(q.lift_min, q.lift_max, q.lift_step);
-  for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
-    for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
-      const Vec3 p = q.wall_point + u * a + n * d;
-      if (stationAvoided(q, Eigen::Vector2d(p.x(), p.y()))) {continue;}
-      Candidate c;
-      c.stand.arm_xy = Eigen::Vector2d(p.x(), p.y());
-      if (q.base) {
-        c.stand.yaw = bestYaw(*q.base, c.stand.arm_xy, Eigen::Vector2d(q.wall_point.x(), q.wall_point.y()),
-          Eigen::Vector2d(n.x(), n.y()), &c.clearance);
-        if (c.clearance < q.min_clearance - 1e-9) {continue;}
-      }
-      const auto plan = planLiftBands(map, q.targets_world, p.x(), p.y(), heights, q.arm_mount_offset_z);
-      if (plan.reachable_count == 0) {continue;}
-      c.covers.assign(words, 0);
-      for (const auto & band : plan.bands) {for (const size_t k : band.pose_indices) {set(c.covers, k);}}
-      c.count = plan.reachable_count;
-      c.standoff = d;
-      c.along = a;
-      orInto(*coverable, c.covers);
-      out.push_back(std::move(c));
-    }
+  for (const auto & g : stationGrid(q)) {
+    Candidate c;
+    c.stand.arm_xy = g.arm_xy;
+    c.stand.yaw = g.yaw;
+    c.clearance = g.clearance;
+    const auto plan = planLiftBands(map, q.targets_world, g.arm_xy.x(), g.arm_xy.y(), heights, q.arm_mount_offset_z);
+    if (plan.reachable_count == 0) {continue;}
+    c.covers.assign(words, 0);
+    for (const auto & band : plan.bands) {for (const size_t k : band.pose_indices) {set(c.covers, k);}}
+    c.count = plan.reachable_count;
+    c.standoff = g.standoff;
+    c.along = g.along;
+    orInto(*coverable, c.covers);
+    out.push_back(std::move(c));
   }
   return out;
 }

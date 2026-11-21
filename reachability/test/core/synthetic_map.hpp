@@ -51,4 +51,19 @@ inline reachability::Map4D syntheticMap(const SyntheticReach & r = {})
   return map;
 }
 
+/// A hand-made map for a horizontal plane: a tool whose approach axis is vertical (pointing up for a
+/// ceiling, down for a floor or table top) at `z` above the arm base is reachable at horizontal radii
+/// r_lo..r_hi (the azimuth of a vertical approach is free, so one azimuth is recorded).
+inline reachability::Map4D syntheticRingMap(double r_lo, double r_hi, double z, bool tool_up)
+{
+  reachability::Map4D map;
+  for (double r = r_lo; r <= r_hi + 1e-9; r += 0.05) {
+    reachability::Pose T = reachability::Pose::Identity();
+    T.translation() = reachability::Vec3(r + 0.025, 0.0, z);
+    if (!tool_up) {T.linear() = Eigen::AngleAxisd(M_PI, reachability::Vec3::UnitX()).toRotationMatrix();}
+    map.record(T);
+  }
+  return map;
+}
+
 }  // namespace reachability_test

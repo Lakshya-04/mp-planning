@@ -96,7 +96,7 @@ TEST(Station, RejectsDegenerateRequests)
   r = baseRequest({});
   EXPECT_FALSE(chooseStation(sharedMap(), r).found);
   r = baseRequest(wallTargets({0.0}, {1.0}));
-  r.wall_normal = Vec3::UnitZ();  // horizontal plane
+  r.wall_normal = Vec3::Zero();  // no plane
   EXPECT_FALSE(chooseStation(sharedMap(), r).found);
 }
 

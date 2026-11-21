@@ -92,6 +92,13 @@ struct ColumnResult
   double limiting_score{0.0};
 };
 
+/// A (stand, column) pair the verifier cut (strokes refused or an end pose unusable).
+struct ColumnRefusal
+{
+  Stand stand;
+  size_t column{0};
+};
+
 struct ColumnStandPlan
 {
   bool success{false};                ///< Every column whole.
@@ -103,6 +110,7 @@ struct ColumnStandPlan
   size_t candidates{0};
   size_t stands_if_splitting_allowed{0};
   bool verified{false};
+  std::vector<ColumnRefusal> refused;   ///< With a verifier: the pairs it cut (stands may be dropped from `stands`).
   double total_travel{0.0};
 };
 

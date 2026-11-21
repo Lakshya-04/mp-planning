@@ -13,24 +13,9 @@ namespace
 {
 using Clock = std::chrono::steady_clock;
 
-struct Frame
-{
-  Vec3 n;
-  Vec3 u;
-  bool ok{false};
-};
+using Frame = SurfaceFrame;
 
-Frame wallFrame(const StationRequest & q)
-{
-  Frame f;
-  if (q.wall_normal.norm() < 1e-9) {return f;}
-  f.n = q.wall_normal.normalized();
-  f.u = Vec3::UnitZ().cross(f.n);
-  if (f.u.norm() < 1e-6) {return f;}   // a horizontal wall plane has no base position on it
-  f.u.normalize();
-  f.ok = true;
-  return f;
-}
+Frame wallFrame(const StationRequest & q) {return surfaceFrame(q.wall_normal);}
 
 /// Open path over `ids` (indices into the chosen list): optional leg from the start, then the legs between stops.
 struct Legs
@@ -87,6 +72,7 @@ const char * toString(StandSelectionCode code)
     case StandSelectionCode::kNoTargets: return "no_targets";
     case StandSelectionCode::kInvalidRequest: return "invalid_request";
     case StandSelectionCode::kNoCandidates: return "no_candidates";
+    case StandSelectionCode::kNoFreeStand: return "no_free_stand";
     case StandSelectionCode::kUnreachableTargets: return "unreachable_targets";
   }
   return "unknown";
@@ -97,27 +83,13 @@ std::vector<CandidateStand> makeCandidateStands(const StationRequest & q)
   std::vector<CandidateStand> out;
   const Frame f = wallFrame(q);
   if (q.targets_world.empty() || !f.ok || !stationGridProblem(q).empty()) {return out;}
-  double u_lo = 1e18, u_hi = -1e18;
-  for (const auto & t : q.targets_world) {
-    const double a = (t.translation() - q.wall_point).dot(f.u);
-    u_lo = std::min(u_lo, a);
-    u_hi = std::max(u_hi, a);
-  }
-  u_lo -= q.lateral_margin;
-  u_hi += q.lateral_margin;
-  for (double d = q.min_clearance; d <= q.max_standoff + 1e-9; d += q.grid_step) {
-    for (double a = u_lo; a <= u_hi + 1e-9; a += q.grid_step) {
-      const Vec3 p = q.wall_point + f.u * a + f.n * d;
-      CandidateStand c;
-      c.stand.arm_xy = Eigen::Vector2d(p.x(), p.y());
-      c.standoff = d;
-      if (q.base) {
-        c.stand.yaw = bestYaw(*q.base, c.stand.arm_xy, Eigen::Vector2d(q.wall_point.x(), q.wall_point.y()),
-            Eigen::Vector2d(f.n.x(), f.n.y()), &c.footprint_clearance);
-        if (c.footprint_clearance < q.min_clearance - 1e-9) {continue;}
-      }
-      out.push_back(c);
-    }
+  for (const auto & g : stationGrid(q)) {
+    CandidateStand c;
+    c.stand.arm_xy = g.arm_xy;
+    c.stand.yaw = g.yaw;
+    c.standoff = g.standoff;
+    c.footprint_clearance = g.clearance;
+    out.push_back(c);
   }
   return out;
 }
@@ -148,13 +120,21 @@ StandSelection selectOnce(
   if (nt == 0) {return finish(StandSelectionCode::kNoTargets, "no targets: nothing to cover");}
   const Frame f = wallFrame(q);
   const auto heights = heightRange(q.lift_min, q.lift_max, q.lift_step);
-  if (!f.ok) {return finish(StandSelectionCode::kInvalidRequest, "wall normal is zero or vertical");}
+  if (!f.ok) {return finish(StandSelectionCode::kInvalidRequest, "plane normal is zero or not finite");}
   if (heights.empty()) {return finish(StandSelectionCode::kInvalidRequest, "empty lift range or non-positive lift_step");}
   if (!std::isfinite(opt.margin_penalty) || opt.margin_penalty < 0.0) {
     return finish(StandSelectionCode::kInvalidRequest, "margin_penalty must be finite and >= 0");
   }
   if (candidates.empty()) {
     for (size_t t = 0; t < nt; ++t) {res.unreachable.push_back(t);}
+    if (q.free_space && !q.free_space->empty()) {
+      StationGridStats gs;
+      stationGrid(q, &gs);
+      if (gs.kept == 0 && gs.free_space_rejected > 0) {
+        return finish(StandSelectionCode::kNoFreeStand,
+          "no candidate stand keeps the base footprint inside the free space");
+      }
+    }
     return finish(StandSelectionCode::kNoCandidates, "no candidate stands");
   }
 

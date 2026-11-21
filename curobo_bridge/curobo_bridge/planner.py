@@ -200,6 +200,21 @@ def closest_solution(solutions: np.ndarray, success: np.ndarray, seed: Sequence[
     return None if best is None else (best.tolist(), best_distance, best_row)
 
 
+def endpoint_failure(start_valid: Optional[bool], goal_valid: Optional[bool]) -> Optional[PlanResult]:
+    """A precheck PlanResult when cuRobo's own state check calls the start or the goal invalid (in
+    collision with itself or the world, or outside the joint limits), else None. `None` for a flag means
+    the check could not run: that is not a failure. A planner cannot leave an invalid start or reach an
+    invalid goal, and without this check the answer is `no_path` after every attempt (37 to 40 s measured
+    for a docked pose at a low lift); the distinct code says WHICH end to look at, and a sphere model that
+    is too conservative shows up here in milliseconds."""
+    bad = [name for name, ok in (('start', start_valid), ('goal', goal_valid)) if ok is False]
+    if not bad:
+        return None
+    return PlanResult(failure_reason_code=f'{bad[0]}_in_collision', failure_stage='precheck',
+                      message=f"cuRobo's state check rejects the {' and '.join(bad)} state (self-collision, "
+                              f'world collision or joint limits in its sphere model); not planned')
+
+
 # upper bound on the states check_motion interpolates (a 1e-9 rad step would build an unbounded list)
 MAX_MOTION_STATES = 100_000
 
@@ -213,7 +228,7 @@ class CuroboPlanner:
                  ik_weights: Optional[Sequence[float]] = None,
                  graph_planner_algorithm: str = 'prm', enable_trajopt: bool = True,
                  enable_graph_attempt: int = 1, seed_fallback: bool = True, fallback_attempts: int = 6,
-                 max_attempts: int = 20):
+                 max_attempts: int = 20, precheck_endpoints: bool = True):
         """`graph_planner_algorithm` ('prm' or 'rrt', the GPU bidirectional RRT), `enable_trajopt` (False:
         the graph seed is retimed and validated, trajectory optimisation is skipped) and
         `enable_graph_attempt` (the plan_cspace attempt at which graph seeding starts; 0 = from the
@@ -228,7 +243,13 @@ class CuroboPlanner:
         docs/planner_benchmark.md). Ignored with `enable_trajopt=False`, which is that route already.
         `max_attempts` is cuRobo's attempt cap for the first (normal) pass, 20 by default; a problem the
         optimiser cannot solve costs all of them before the fallback runs (6 to 30 s measured), so lower
-        it when the fallback is on and latency matters."""
+        it when the fallback is on and latency matters.
+
+        `precheck_endpoints`: before planning, `plan_joint` asks cuRobo's state check (the one `check_states`
+        exposes) about the start and the goal and returns `start_in_collision` / `goal_in_collision` at the
+        `precheck` stage when either is invalid, instead of running every attempt to a `no_path`. It costs
+        one batched check (milliseconds). Hypothesis, not yet run on a GPU: the docked-to-stow `no_path`
+        after 37 to 40 s at a low lift is such an invalid start; False restores the old behaviour."""
         import torch
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
         from curobo.types import JointState
@@ -253,6 +274,7 @@ class CuroboPlanner:
         self._seed_fallback = bool(seed_fallback) and enable_trajopt
         self._fallback_attempts = int(fallback_attempts)
         self._max_attempts = int(max_attempts)
+        self._precheck_endpoints = bool(precheck_endpoints)
         self._planner = MotionPlanner(MotionPlannerCfg.create(
             robot=robot, max_goalset=max_goalset, collision_cache=cache, **extra))
         # IK picks the solution nearest the seed: metres of a prismatic joint must not count as radians.
@@ -377,6 +399,9 @@ class CuroboPlanner:
         bad = self._check_state(start, 'start') or self._check_state(goal, 'goal')
         if bad:
             return bad
+        invalid = self._precheck(start, goal)
+        if invalid:
+            return invalid
         cur, tgt = self._state(start), self._state(goal)
         result = self._planner.plan_cspace(tgt, cur, max_attempts=self._max_attempts,
                                            enable_graph_attempt=self._enable_graph_attempt)
@@ -388,6 +413,17 @@ class CuroboPlanner:
             return out
         fallback.planning_time_s += out.planning_time_s
         return fallback
+
+    def _precheck(self, start: Sequence[float], goal: Sequence[float]) -> Optional[PlanResult]:
+        """endpoint_failure for this planner's own state check; a check that cannot run is not a failure."""
+        if not self._precheck_endpoints:
+            return None
+        try:
+            start_ok, goal_ok = self.check_states([list(start), list(goal)])
+        except Exception as e:  # noqa: BLE001 - a missing check API must not stop planning
+            logging.getLogger(__name__).warning('endpoint precheck unavailable (%s): planning without it', e)
+            return None
+        return endpoint_failure(start_ok, goal_ok)
 
     def _plan_graph_seed(self, goal_state, current_state) -> Optional[PlanResult]:
         """plan_cspace with trajectory optimisation bypassed: graph seeds are evaluated (fitted, retimed,

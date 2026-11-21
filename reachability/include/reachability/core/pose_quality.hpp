@@ -19,6 +19,8 @@
 
 #include <vector>
 
+#include <Eigen/Dense>
+
 #include "reachability/core/arm_model.hpp"
 #include "reachability/core/map4d.hpp"
 
@@ -50,10 +52,23 @@ struct PoseScore
 /// Score of a tool pose given in the arm base frame.
 PoseScore scorePose(const Map4D & map, const Pose & tool_in_arm_base, const MarginConfig & config);
 
-/// Smallest singular value of the 6 x dof Jacobian at `q` (columns: linear velocity then rotation vector
-/// of the tool, by finite differences of ArmModel::evaluate). -1 when evaluate refuses `q`. Zero or near it
-/// means a singular configuration. Works for any dof.
+/// 6 x dof Jacobian at `q` (columns: linear velocity then rotation vector of the tool, by finite differences
+/// of ArmModel::evaluate). False when evaluate refuses `q` or the size is wrong.
+bool armJacobian(const ArmModel & arm, const std::vector<double> & q, Eigen::MatrixXd & J, double eps = 1e-5);
+
+/// Smallest singular value of a Jacobian of any shape. -1 for an empty matrix. Zero or near it is a
+/// singular configuration.
+double minSingularValue(const Eigen::MatrixXd & J);
+/// Largest over smallest singular value; +infinity when the smallest is zero (relative 1e-12). -1 if empty.
+double conditionNumber(const Eigen::MatrixXd & J);
+/// Yoshikawa measure: product of the singular values (sqrt(det(J J^T)) for full row rank). -1 if empty.
+double manipulability(const Eigen::MatrixXd & J);
+
+/// Same three for an arm model at `q`; -1 when evaluate refuses `q`. Unscaled (metres and radians share one
+/// Jacobian). Work for any dof.
 double minSingularValue(const ArmModel & arm, const std::vector<double> & q, double eps = 1e-5);
+double conditionNumber(const ArmModel & arm, const std::vector<double> & q, double eps = 1e-5);
+double manipulability(const ArmModel & arm, const std::vector<double> & q, double eps = 1e-5);
 
 /// Smallest distance of a joint to its limit as a share of that joint's range, in [0, 0.5]. Joints with a
 /// range of 2*pi or more (continuous) are ignored; 0.5 when every joint is ignored. -1 for a size mismatch.

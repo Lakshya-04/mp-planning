@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/SVD>
 
@@ -45,13 +46,13 @@ PoseScore scorePose(const Map4D & map, const Pose & T, const MarginConfig & conf
   return s;
 }
 
-double minSingularValue(const ArmModel & arm, const std::vector<double> & q, double eps)
+bool armJacobian(const ArmModel & arm, const std::vector<double> & q, Eigen::MatrixXd & J, double eps)
 {
   const int n = arm.dof();
-  if (static_cast<int>(q.size()) != n || n < 1) {return -1.0;}
+  if (static_cast<int>(q.size()) != n || n < 1) {return false;}
   Pose T0;
-  if (!arm.evaluate(q, T0)) {return -1.0;}
-  Eigen::MatrixXd J(6, n);
+  if (!arm.evaluate(q, T0)) {return false;}
+  J.resize(6, n);
   for (int j = 0; j < n; ++j) {
     std::vector<double> qp = q;
     qp[static_cast<size_t>(j)] += eps;
@@ -59,7 +60,7 @@ double minSingularValue(const ArmModel & arm, const std::vector<double> & q, dou
     if (!arm.evaluate(qp, T1)) {
       // Limit hit on the forward step: difference backwards instead.
       qp[static_cast<size_t>(j)] = q[static_cast<size_t>(j)] - eps;
-      if (!arm.evaluate(qp, T1)) {return -1.0;}
+      if (!arm.evaluate(qp, T1)) {return false;}
       J.block<3, 1>(0, j) = (T0.translation() - T1.translation()) / eps;
       const Eigen::AngleAxisd r(T0.linear() * T1.linear().transpose());
       J.block<3, 1>(3, j) = r.axis() * r.angle() / eps;
@@ -69,11 +70,54 @@ double minSingularValue(const ArmModel & arm, const std::vector<double> & q, dou
     const Eigen::AngleAxisd r(T1.linear() * T0.linear().transpose());
     J.block<3, 1>(3, j) = r.axis() * r.angle() / eps;
   }
+  return true;
+}
+
+double minSingularValue(const Eigen::MatrixXd & J)
+{
+  if (J.rows() < 1 || J.cols() < 1) {return -1.0;}
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(J);
+  // With fewer joints than task dimensions there are fewer singular values than task rows: the smallest of
+  // the joints' own directions is returned (the arm lacks the missing task directions at every configuration).
+  return svd.singularValues().minCoeff();
+}
+
+double conditionNumber(const Eigen::MatrixXd & J)
+{
+  if (J.rows() < 1 || J.cols() < 1) {return -1.0;}
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(J);
   const Eigen::VectorXd sv = svd.singularValues();
-  // With fewer than 6 joints there are fewer singular values than task dimensions: the smallest of the
-  // joints' own directions is returned (the arm lacks the missing task directions at every configuration).
-  return sv.minCoeff();
+  const double hi = sv.maxCoeff(), lo = sv.minCoeff();
+  if (!(hi > 0.0) || lo <= 1e-12 * hi) {return std::numeric_limits<double>::infinity();}
+  return hi / lo;
+}
+
+double manipulability(const Eigen::MatrixXd & J)
+{
+  if (J.rows() < 1 || J.cols() < 1) {return -1.0;}
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(J);
+  return svd.singularValues().prod();
+}
+
+double minSingularValue(const ArmModel & arm, const std::vector<double> & q, double eps)
+{
+  Eigen::MatrixXd J;
+  if (!armJacobian(arm, q, J, eps)) {return -1.0;}
+  return minSingularValue(J);
+}
+
+double conditionNumber(const ArmModel & arm, const std::vector<double> & q, double eps)
+{
+  Eigen::MatrixXd J;
+  if (!armJacobian(arm, q, J, eps)) {return -1.0;}
+  return conditionNumber(J);
+}
+
+double manipulability(const ArmModel & arm, const std::vector<double> & q, double eps)
+{
+  Eigen::MatrixXd J;
+  if (!armJacobian(arm, q, J, eps)) {return -1.0;}
+  return manipulability(J);
 }
 
 double jointLimitMargin(const ArmModel & arm, const std::vector<double> & q)

@@ -81,6 +81,7 @@ enum class PoseFailure
   kRefused,       ///< The verifier refused it (IK, collision, limits).
   kSingular,      ///< The verifier's joint solution has a smallest singular value under the threshold.
   kJointLimit,    ///< ... or a joint closer to its limit than the threshold.
+  kBranchBreak,   ///< IK solves the pose but not continuously from the previous one (see column_ik_chain.hpp).
 };
 
 const char * toString(PoseFailure failure);

@@ -26,6 +26,7 @@ const char * toString(PoseFailure f)
     case PoseFailure::kRefused: return "refused";
     case PoseFailure::kSingular: return "singular";
     case PoseFailure::kJointLimit: return "joint_limit";
+    case PoseFailure::kBranchBreak: return "branch_break";
   }
   return "none";
 }
